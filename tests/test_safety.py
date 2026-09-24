@@ -108,11 +108,15 @@ def test_no_players_only_world_actions():
 
 
 def test_power_gates_actions():
-    rng = random.Random(2)
-    safe = {choose_action("aversion", 1.0, ["Steve"], rng, "safe").name for _ in range(300)}
-    am = {choose_action("aversion", 1.0, ["Steve"], rng, "am").name for _ in range(300)}
-    assert "HATE" not in safe and "криперы!" not in safe
-    assert {"HATE", "криперы!", "запирает в клетку"} <= am
+    from flybrain.commands import available
+
+    def names(power):
+        return {e[1].__name__.lstrip("_") for e in available("aversion", 1.0, power, True)}
+
+    safe, am = names("safe"), names("am")
+    assert "hate" not in safe and "creepers" not in safe and "cage" not in safe
+    assert {"hate", "creepers", "cage", "scenario:HATE в небе"} <= am
+    assert len(am) > len(names("chaos")) > len(safe)
 
 
 def test_arsenal_is_huge():

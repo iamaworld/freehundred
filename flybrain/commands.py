@@ -651,15 +651,36 @@ _FULL: dict[str, list[Entry]] | None = None
 
 
 def full_catalog() -> dict[str, list[Entry]]:
-    """Ручные сценарии + арсенал из ванильных реестров (собирается один раз)."""
+    """Ручные сценарии + сценарии-шаблоны + арсенал из реестров (собирается один раз)."""
     global _FULL
     if _FULL is None:
         from .arsenal import build_arsenal
 
+        from .arsenal import _ORDER, _min_power
+        from .scenarios import build_scenarios
+
         _FULL = {m: list(e) for m, e in CATALOG.items()}
         for mood, entries in build_arsenal().items():
             _FULL.setdefault(mood, []).extend(entries)
+        for mood, entries in build_scenarios().items():
+            for w, b, mi, floor in entries:
+                if (power := _min_power(b)) is not None:
+                    _FULL.setdefault(mood, []).append((w, b, mi, max(power, floor, key=_ORDER.index)))
+        _FULL = {m: _balance(es) for m, es in _FULL.items()}
     return _FULL
+
+
+def _source(builder) -> str:
+    return builder.__name__.split(":", 1)[0] if ":" in builder.__name__ else "hand"
+
+
+def _balance(entries: list[Entry]) -> list[Entry]:
+    """Ручные сценарии, шаблоны и арсенал делят шансы поровну — чтобы характер
+    мухи не утонул в тысяче мелких действий."""
+    totals: dict[str, float] = {}
+    for w, b, *_ in entries:
+        totals[_source(b)] = totals.get(_source(b), 0.0) + w
+    return [(w / totals[_source(b)], b, mi, p) for w, b, mi, p in entries]
 
 
 def available(mood: str, intensity: float, power: str, with_players: bool) -> list[Entry]:
