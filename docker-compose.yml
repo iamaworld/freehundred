@@ -1,0 +1,31 @@
+services:
+  minecraft:
+    image: itzg/minecraft-server
+    environment:
+      EULA: "TRUE"
+      TYPE: PAPER
+      VERSION: "1.21.8"
+      MEMORY: 2G
+      ENABLE_RCON: "true"
+      RCON_PASSWORD: ${RCON_PASSWORD:-change-me-bzz}
+      # RCON наружу не публикуем — к нему ходит только муха внутри сети compose
+    ports:
+      - "25565:25565"
+    volumes:
+      - ./mc-data:/data
+    restart: unless-stopped
+
+  flybrain:
+    build: .
+    depends_on:
+      - minecraft
+    environment:
+      FLY_RCON_HOST: minecraft
+      FLY_RCON_PORT: "25575"
+      FLY_RCON_PASSWORD: ${RCON_PASSWORD:-change-me-bzz}
+      FLY_LOG_PATH: /mc/logs/latest.log
+      # любые поля Config можно переопределить: FLY_ACT_GAIN, FLY_MAX_ACTIONS_PER_MIN, ...
+    volumes:
+      - ./data:/data          # коннектом (~135 МБ, качается при первом запуске)
+      - ./mc-data:/mc:ro      # логи сервера — «органы чувств» мухи
+    restart: unless-stopped

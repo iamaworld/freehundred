@@ -1,0 +1,6 @@
+brian2==2.9.0
+# brian2 2.9 ещё не дружит с numpy 2.3+ (ndarray.ptp)
+numpy>=1.26,<2.3
+pandas>=2.0
+pyarrow>=14
+cython>=3.0
