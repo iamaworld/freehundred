@@ -117,8 +117,12 @@ class Ctx:
         return self.at(f"particle minecraft:{name} ~ ~1.5 ~ 0.6 0.6 0.6 0.05 {count}")
 
 
+# кто говорит в чате: «Муха» или «AM» (меняется контроллером по FLY_PERSONA)
+SPEAKER = {"name": "Муха", "color": "gold"}
+
+
 def tellraw(text: str, color: str = "yellow", target: str = "@a") -> str:
-    msg = [{"text": "[Муха] ", "color": "gold", "bold": True}, {"text": text, "color": color}]
+    msg = [{"text": f"[{SPEAKER['name']}] ", "color": SPEAKER["color"], "bold": True}, {"text": text, "color": color}]
     return f"tellraw {target} {json.dumps(msg, ensure_ascii=False)}"
 
 
@@ -662,7 +666,12 @@ def full_catalog() -> dict[str, list[Entry]]:
         _FULL = {m: list(e) for m, e in CATALOG.items()}
         for mood, entries in build_arsenal().items():
             _FULL.setdefault(mood, []).extend(entries)
-        for mood, entries in build_scenarios().items():
+        from .am import build_am_scenarios
+
+        extra = build_scenarios()
+        for mood, entries in build_am_scenarios().items():
+            extra.setdefault(mood, []).extend(entries)
+        for mood, entries in extra.items():
             for w, b, mi, floor in entries:
                 if (power := _min_power(b)) is not None:
                     _FULL.setdefault(mood, []).append((w, b, mi, max(power, floor, key=_ORDER.index)))

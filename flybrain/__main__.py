@@ -117,6 +117,12 @@ def cmd_arsenal(args):
         if args.verbose:
             print("   " + "; ".join(sorted(names)))
     print(f"\nвсего уникальных действий: {total}")
+    from .am import stats
+
+    st = stats()
+    print(f"\nAM (FLY_POWER=am): игр {st['games']} ({st['game_specs']} испытаний × {st['punishments']} кар), "
+          f"превращений {st['transforms']}, иллюзий {st['illusions']}, вариантов монологов {st['monologues']}")
+    print(f"итого уникальных событий: {total + st['games']}")
 
 
 def cmd_download(args):

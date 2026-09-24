@@ -40,6 +40,10 @@ class S:
 def _render(tpl: str, c: Ctx, cache: dict) -> str:
     def field(m):
         key = m.group(1)
+        if key in ("me", "mecolor"):
+            from .commands import SPEAKER
+
+            return SPEAKER["name" if key == "me" else "color"]
         if key.startswith("c:"):
             return c.rng.choice(key[2:].split(","))
         if key == "p":
@@ -111,7 +115,7 @@ TEXT3D = ('{Tags:["flybrain","flytext"],text:{text:"%s",color:"%s",bold:true},bi
 
 
 def say(text: str, color: str = "yellow") -> str:
-    return 'tellraw @a [{"text":"[Муха] ","color":"gold","bold":true},{"text":"%s","color":"%s"}]' % (text, color)
+    return 'tellraw @a [{"text":"[${me}] ","color":"${mecolor}","bold":true},{"text":"%s","color":"%s"}]' % (text, color)
 
 
 def title(target: str, text: str, color: str, kind: str = "title") -> str:

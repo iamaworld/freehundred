@@ -11,6 +11,8 @@ import sys
 import time
 from dataclasses import dataclass, fields
 
+from . import am as am_mod
+from . import commands
 from .body import FlyEye
 from .commands import MOOD_COLOR, choose_action, hate_line, tellraw
 from .memory import PlayerMemory
@@ -33,6 +35,11 @@ class Config:
     mood_smoothing: float = 0.25  # доля старого настроения (меньше — быстрее меняется)
     habituation: float = 0.1  # привыкание к текущей эмоции за тик
     announce: bool = True  # подписывать каждое действие над хотбаром + вспышка
+    persona: str = "auto"  # fly | am | auto (am при FLY_POWER=am)
+    game_prob: float = 0.3  # (AM) доля действий, которые становятся «играми»
+    max_games: int = 2  # (AM) сколько игр одновременно
+    monologue_every_s: float = 150.0  # (AM) примерно раз во столько секунд — монолог
+    guard_hp: float = 5.0  # (AM) ниже этого здоровья AM не даёт умереть
     poll_every_ticks: int = 10  # как часто спрашивать list / time
     stim_half_life_s: float = 1.5
     bossbar: bool = True
@@ -110,6 +117,16 @@ class FlyController:
         self._shown_mood = None
         self._shown_sidebar: dict[str, int] = {}
         self._last_tick = None
+        # личность
+        self.am = self.cfg.persona == "am" or (self.cfg.persona == "auto" and self.cfg.power == "am")
+        commands.SPEAKER.update({"name": "AM", "color": "dark_red"} if self.am else {"name": "Муха", "color": "gold"})
+        self.voice = am_mod.Voice(self.rng)
+        self.gm = am_mod.GameMaster(self.send, self.rng, self.voice, power=self.cfg.power) if self.am else None
+        if self.gm:
+            self.gm.on_result = lambda p, won: self.memory.count(p, "games_won" if won else "games_lost")
+        self._next_monologue = time.time() + self.rng.uniform(30, 90)
+        self._guarded: dict[str, float] = {}
+        self._last_mention = -1e9
 
     # ---------- ввод ----------
     def feel(self, stimuli, player: str | None = None, learn: bool = True):
@@ -141,6 +158,59 @@ class FlyController:
                  + f" | отношение {self.memory.get(ev.player):+.2f}")
         if ev.kind == "chat" and _WHO_AM_I.search(ev.text):
             self.send(tellraw(f"{ev.player}: {self.memory.describe(ev.player)}", "gold"))
+        if ev.kind == "join":
+            n = self.memory.count(ev.player, "visits")
+        if ev.kind == "death":
+            deaths = self.memory.count(ev.player, "deaths")
+        if self.am:
+            self.am_react(ev, n if ev.kind == "join" else deaths if ev.kind == "death" else 0)
+
+    def am_react(self, ev, n: int):
+        """AM отвечает на события: помнит визиты, смерти, слышит своё имя."""
+        v, p = self.voice, ev.player
+        if ev.kind == "join":
+            pool = am_mod.FIRST_GREETINGS if n <= 1 else am_mod.GREETINGS
+            self.send(am_mod.am_say(v.line(pool, p, n)))
+            self.send(commands.title(p, "title", "I AM", "dark_red"))
+        elif ev.kind == "leave":
+            self.send(am_mod.am_say(v.line(am_mod.LEAVE_LINES, p)))
+        elif ev.kind == "death":
+            self.send(am_mod.am_say(v.line(am_mod.DEATH_LINES, p, n)))
+            if self.gm:
+                self.gm.on_death(p)
+            # «я не дам тебе уйти»: после возрождения — регенерация (чтобы жил дальше)
+            heapq.heappush(self._reverts, (time.time() + 6, self.tick_no, f"effect give {p} minecraft:regeneration 10 2"))
+        elif ev.kind == "chat":
+            if self.gm:
+                self.gm.on_chat(p, ev.text)
+            if re.search(r"\b(am|ам|муха)\b", ev.text.lower()) and time.time() - self._last_mention > 10:
+                self._last_mention = time.time()
+                self.send(am_mod.am_say(v.line(am_mod.MENTION_LINES, p)))
+
+    def am_tick(self, now: float):
+        """Игры, монологи и «бессмертие» игроков."""
+        if not self.am:
+            return
+        if self.gm:
+            self.gm.tick()
+            for line in self.gm.log:
+                self.log(f"AM: {line}")
+            self.gm.log.clear()
+            for delay, cmd in self.gm.reverts:
+                heapq.heappush(self._reverts, (now + delay, self.tick_no, cmd))
+            self.gm.reverts.clear()
+        if self.players and now >= self._next_monologue:
+            self._next_monologue = now + self.cfg.monologue_every_s * self.rng.uniform(0.6, 1.4)
+            self.send(am_mod.am_say(self.voice.monologue(self.rng.choice(self.players))))
+        # AM не даёт умереть: проверяем здоровье игрока в фокусе
+        p = self.focus
+        if p and self.tick_no % 3 == 0 and now - self._guarded.get(p, -1e9) > 20:
+            m = re.search(r"data: ([\d.]+)f?", self.send(f"data get entity {p} Health") or "")
+            if m and 0 < float(m.group(1)) < self.cfg.guard_hp:
+                self._guarded[p] = now
+                self.send(f"effect give {p} minecraft:instant_health 1 1")
+                self.send(f"effect give {p} minecraft:resistance 5 4")
+                self.send(am_mod.am_say(self.voice.line(am_mod.GUARD_LINES, p)))
 
     def poll_world(self):
         try:
@@ -214,6 +284,14 @@ class FlyController:
         target = self.memory.pick(self.players, TARGET_PREFERENCE.get(m.name, ""), self.rng)
         if TARGET_PREFERENCE.get(m.name) is None and self.focus in self.players:
             target = self.focus
+        if (self.gm and target and m.name in ("aversion", "curious", "alert", "bored")
+                and target not in self.gm.games and len(self.gm.games) < self.cfg.max_games
+                and self.rng.random() < self.cfg.game_prob):
+            if self.gm.offer(target, m.intensity):
+                self._last_action = now
+                self._recent.append(now)
+                self.log(f"{self.label(m)} -> ИГРА для {target}")
+                return
         action = choose_action(m.name, m.intensity, self.players, self.rng, self.cfg.power, target, self.send)
         if not action:
             return
@@ -237,7 +315,7 @@ class FlyController:
         вспышка частиц у цели, звук и «пульс» глаза."""
         m = self.mood
         particle, sound = FLOURISH.get(m.name, FLOURISH["bored"])
-        text = f"Муха · {self.label(m)} → {what}" + (f" · {target}" if target else "")
+        text = f"{commands.SPEAKER['name']} · {self.label(m)} → {what}" + (f" · {target}" if target else "")
         self.send("title @a actionbar " + json.dumps({"text": text, "color": MOOD_COLOR.get(m.name, "white")},
                                                        ensure_ascii=False))
         if target:
@@ -264,11 +342,11 @@ class FlyController:
         name, value = self.mood.name, int(round(self.mood.intensity * 10)) * 10
         shown_name, shown_value = self._shown_mood or (None, None)
         if self._shown_mood is None:
-            self.send('bossbar add flybrain:mood {"text":"Муха"}')
+            self.send('bossbar add flybrain:mood {"text":"%s"}' % commands.SPEAKER["name"])
             self.send("bossbar set flybrain:mood max 100")
             self.send("bossbar set flybrain:mood players @a")
         if name != shown_name:
-            self.send(f'bossbar set flybrain:mood name {{"text":"Муха: {self.label(self.mood)}"}}')
+            self.send(f'bossbar set flybrain:mood name {{"text":"{commands.SPEAKER["name"]}: {self.label(self.mood)}"}}')
             self.send(f"bossbar set flybrain:mood color {MOOD_COLOR.get(name, 'white')}")
         if value != shown_value:
             self.send(f"bossbar set flybrain:mood value {value}")
@@ -303,6 +381,7 @@ class FlyController:
         if self.tick_no % self.cfg.poll_every_ticks == 1:
             self.poll_world()
         self.run_reverts(now)
+        self.am_tick(now)
         if self.tick_no % self.cfg.body_every_ticks == 0:
             self.body_tick()
         self.memory.forget(dt)
