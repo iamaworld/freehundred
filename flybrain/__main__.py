@@ -122,6 +122,9 @@ def cmd_arsenal(args):
     st = stats()
     print(f"\nAM (FLY_POWER=am): игр {st['games']} ({st['game_specs']} испытаний × {st['punishments']} кар), "
           f"превращений {st['transforms']}, иллюзий {st['illusions']}, вариантов монологов {st['monologues']}")
+    from .dread import count as dread_count
+
+    print(f"    из них {dread_count()} — абстрактный психологический ужас (dread.py)")
     print(f"итого уникальных событий: {total + st['games']}")
 
 

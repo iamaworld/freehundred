@@ -10,9 +10,12 @@ import re
 import sys
 import time
 from dataclasses import dataclass, fields
+from pathlib import Path
 
 from . import am as am_mod
 from . import commands
+from . import mainframe as mf_mod
+from .learning import ResponseWatcher, TormentModel, is_begging
 from .body import FlyEye
 from .commands import MOOD_COLOR, choose_action, hate_line, tellraw
 from .memory import PlayerMemory
@@ -40,6 +43,9 @@ class Config:
     max_games: int = 2  # (AM) сколько игр одновременно
     monologue_every_s: float = 150.0  # (AM) примерно раз во столько секунд — монолог
     guard_hp: float = 5.0  # (AM) ниже этого здоровья AM не даёт умереть
+    learn: bool = True  # (AM) учиться, что сильнее задевает игроков, и не повторяться
+    mainframe: bool = True  # (AM) построить мейнфрейм с монологом рядом со спавном
+    mainframe_pos: str = ""  # "x y z" — где строить (пусто = рядом со спавном)
     poll_every_ticks: int = 10  # как часто спрашивать list / time
     stim_half_life_s: float = 1.5
     bossbar: bool = True
@@ -86,7 +92,8 @@ FLOURISH = {
 TARGET_PREFERENCE = {"feeding": "friend", "grooming": "friend", "aversion": "enemy", "escape": "enemy"}
 _PLAYERS_RE = re.compile(r"online:\s*(.*)$")
 _TIME_RE = re.compile(r"The time is (\d+)")
-_WHO_AM_I = re.compile(r"(муха|fly).*(кто я|who am i|любишь меня|ненавидишь меня)", re.I)
+_WHO_AM_I = re.compile(r"(муха|fly|am|ам).*(кто я|who am i|любишь меня|ненавидишь меня)", re.I)
+_LEARNED = re.compile(r"(муха|fly|am|ам).*(чему.*научил|что.*усвоил|что ты знаешь|what.*learn)", re.I)
 
 
 class FlyController:
@@ -122,6 +129,12 @@ class FlyController:
         commands.SPEAKER.update({"name": "AM", "color": "dark_red"} if self.am else {"name": "Муха", "color": "gold"})
         self.voice = am_mod.Voice(self.rng)
         self.gm = am_mod.GameMaster(self.send, self.rng, self.voice, power=self.cfg.power) if self.am else None
+        mpath = str(Path(memory_path).with_name("torment.json")) if memory_path else None
+        self.torment = TormentModel(mpath) if (self.am and self.cfg.learn) else None
+        self.watcher = ResponseWatcher(self.torment, self.send, self.memory) if self.torment else None
+        self._mainframe_built = not (self.am and self.cfg.mainframe)
+        self._mainframe_pos = None
+        self._next_pulse = 0.0
         if self.gm:
             self.gm.on_result = lambda p, won: self.memory.count(p, "games_won" if won else "games_lost")
         self._next_monologue = time.time() + self.rng.uniform(30, 90)
@@ -150,6 +163,8 @@ class FlyController:
         if ev.kind == "death" and ev.other in self.players:
             self.memory.learn(ev.other, 0.0, 200.0)
             self.focus = ev.other
+        if ev.kind == "death" and self.watcher:
+            self.watcher.note_curse(ev.player)  # смерть отзовётся и в статистике, и здесь
         elif ev.kind in ("chat", "join"):
             self.focus = ev.player
         # условный рефлекс: сам вид игрока уже сладок или горек
@@ -159,6 +174,13 @@ class FlyController:
                  + f" | отношение {self.memory.get(ev.player):+.2f}")
         if ev.kind == "chat" and _WHO_AM_I.search(ev.text):
             self.send(tellraw(f"{ev.player}: {self.memory.describe(ev.player)}", "gold"))
+        if ev.kind == "chat" and self.torment and _LEARNED.search(ev.text):
+            top = self.torment.top(3)
+            if top:
+                names = ", ".join(n.split(":")[-1].lstrip("_") for n, _ in top)
+                self.send(am_mod.am_say(f"я усвоила, что сильнее всего вас задевает: {names}. я запомню."))
+            else:
+                self.send(am_mod.am_say("я ещё изучаю вас. дайте мне время. его у меня много."))
         if ev.kind == "join":
             n = self.memory.count(ev.player, "visits")
         if ev.kind == "death":
@@ -175,6 +197,8 @@ class FlyController:
             self.send(commands.title(p, "title", "I AM", "dark_red"))
         elif ev.kind == "leave":
             self.send(am_mod.am_say(v.line(am_mod.LEAVE_LINES, p)))
+            if self.watcher:
+                self.watcher.note_quit(p)  # игрок вышел — сильный отклик
         elif ev.kind == "death":
             self.send(am_mod.am_say(v.line(am_mod.DEATH_LINES, p, n)))
             if self.gm:
@@ -184,14 +208,17 @@ class FlyController:
         elif ev.kind == "chat":
             if self.gm:
                 self.gm.on_chat(p, ev.text)
+            if self.watcher and is_begging(ev.text):
+                self.watcher.note_curse(p)  # мольбы/брань — отклик
             if re.search(r"\b(am|ам|муха)\b", ev.text.lower()) and time.time() - self._last_mention > 10:
                 self._last_mention = time.time()
                 self.send(am_mod.am_say(v.line(am_mod.MENTION_LINES, p)))
 
     def am_tick(self, now: float):
-        """Игры, монологи и «бессмертие» игроков."""
+        """Мейнфрейм, игры, монологи и «бессмертие» игроков."""
         if not self.am:
             return
+        self.build_mainframe(now)
         if self.gm:
             self.gm.tick()
             for line in self.gm.log:
@@ -200,6 +227,10 @@ class FlyController:
             for delay, cmd in self.gm.reverts:
                 heapq.heappush(self._reverts, (now + delay, self.tick_no, cmd))
             self.gm.reverts.clear()
+        if self._mainframe_pos and now >= self._next_pulse:
+            self._next_pulse = now + self.rng.uniform(4, 9)
+            for cmd in mf_mod.pulse(*self._mainframe_pos):
+                self.send(cmd)
         if self.players and now >= self._next_monologue:
             self._next_monologue = now + self.cfg.monologue_every_s * self.rng.uniform(0.6, 1.4)
             self.send(am_mod.am_say(self.voice.monologue(self.rng.choice(self.players))))
@@ -212,6 +243,29 @@ class FlyController:
                 self.send(f"effect give {p} minecraft:instant_health 1 1")
                 self.send(f"effect give {p} minecraft:resistance 5 4")
                 self.send(am_mod.am_say(self.voice.line(am_mod.GUARD_LINES, p)))
+
+    def build_mainframe(self, now: float):
+        """Построить мейнфрейм один раз, как проект (по шагу за тик)."""
+        if self._mainframe_built or not self.players:
+            return
+        if self.cfg.mainframe_pos:
+            try:
+                x, y, z = (int(v) for v in self.cfg.mainframe_pos.split())
+            except ValueError:
+                x = y = z = None
+        else:
+            spawn = mf_mod.locate_spawn(self.send)
+            if not spawn:
+                return
+            x, y, z = spawn[0] + 40, spawn[1], spawn[2] + 40  # рядом со спавном, не поверх построек
+        if x is None or mf_mod.exists(self.send):
+            self._mainframe_built = True
+            self._mainframe_pos = mf_mod.locate_mainframe(self.send) if x is None else (x, y, z)
+            return
+        self._mainframe_built = True
+        self._mainframe_pos = (x, y, z)
+        self.projects.append(mf_mod.build_steps(x, y, z))
+        self.log(f"AM строит мейнфрейм в {x} {y} {z}")
 
     def poll_world(self):
         try:
@@ -293,11 +347,15 @@ class FlyController:
                 self._recent.append(now)
                 self.log(f"{self.label(m)} -> ИГРА для {target}")
                 return
-        action = choose_action(m.name, m.intensity, self.players, self.rng, self.cfg.power, target, self.send)
-        if not action:
+        chooser = (lambda opts: self.torment.choose(opts, self.rng)) if self.torment else None
+        result = choose_action(m.name, m.intensity, self.players, self.rng, self.cfg.power, target, self.send, chooser)
+        if not result:
             return
+        action, key = result if isinstance(result, tuple) else (result, result.name)
         self._last_action = now
         self._recent.append(now)
+        if self.watcher and target:
+            self.watcher.start(key, target, self.tick_no)
         self.log(f"{self.label(m)} ({m.intensity:.2f}) -> {action.name}" + (f" [{target}]" if target else ""))
         for cmd in action.commands:
             reply = self.send(cmd)
@@ -308,6 +366,8 @@ class FlyController:
                     self.senses.add(sense, hz)
         for delay, cmd in action.reverts:
             heapq.heappush(self._reverts, (now + delay, self.tick_no, cmd))
+        if self.watcher and target and any(w in action.name for w in ("бег", "паник", "уно", "изгна", "Ад")):
+            self.watcher.note_flee(target)
         if action.steps:
             self.projects.append(list(action.steps))
         if self.cfg.announce:
@@ -394,6 +454,10 @@ class FlyController:
         self.run_reverts(now)
         self.run_projects()
         self.am_tick(now)
+        if self.watcher:
+            self.watcher.tick(self.tick_no)
+        if self.tick_no % 30 == 0 and self.torment:
+            self.torment.save()
         if self.tick_no % self.cfg.body_every_ticks == 0:
             self.body_tick()
         self.memory.forget(dt)
@@ -431,6 +495,8 @@ class FlyController:
         """Откатить временные эффекты и сохранить память."""
         self.run_reverts(time.time(), force=True)
         self.memory.save()
+        if self.torment:
+            self.torment.save()
 
     def run_forever(self):
         self.log(f"муха проснулась и слушает сервер (сила: {self.cfg.power})")

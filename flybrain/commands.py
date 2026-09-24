@@ -668,10 +668,11 @@ def full_catalog() -> dict[str, list[Entry]]:
         for mood, entries in build_arsenal().items():
             _FULL.setdefault(mood, []).extend(entries)
         from .am import build_am_scenarios
+        from .dread import build_dread
         from .projects import build_entries as build_projects
 
         extra = build_scenarios()
-        for more in (build_am_scenarios(), build_projects()):
+        for more in (build_am_scenarios(), build_projects(), build_dread()):
             for mood, entries in more.items():
                 extra.setdefault(mood, []).extend(entries)
         for mood, entries in extra.items():
@@ -707,12 +708,17 @@ def available(mood: str, intensity: float, power: str, with_players: bool) -> li
 
 
 def choose_action(mood: str, intensity: float, players: list[str], rng: random.Random, power: str = "am",
-                  player: str | None = None, query=None) -> Action | None:
+                  player: str | None = None, query=None, chooser=None) -> tuple[Action, str] | Action | None:
+    """chooser(options)->(builder, key): переопределяет выбор (обучение/новизна).
+    Возвращает (Action, имя_действия) если chooser задан, иначе Action (как раньше)."""
     options = available(mood, intensity, power, bool(players))
     if not options:
         return None
-    builder = rng.choices([e[1] for e in options], weights=[e[0] for e in options])[0]
     if player is None and players:
         player = rng.choice(players)
+    if chooser is not None:
+        builder, key = chooser([(e[0], e[1].__name__, e[1]) for e in options])
+        return builder(Ctx(mood, intensity, player, players, rng, power, query)), key
+    builder = rng.choices([e[1] for e in options], weights=[e[0] for e in options])[0]
     return builder(Ctx(mood, intensity, player, players, rng, power, query))
 
