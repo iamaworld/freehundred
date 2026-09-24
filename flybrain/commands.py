@@ -66,6 +66,7 @@ class Action:
     name: str
     commands: list[str]
     reverts: list[tuple[float, str]] = field(default_factory=list)  # (через сколько секунд, команда)
+    steps: list[list[str]] = field(default_factory=list)  # долгий проект: по шагу за тик
 
 
 @dataclass
@@ -104,8 +105,8 @@ class Ctx:
         m = _POS_RE.search(self.ask(f"data get entity {self.p} Pos"))
         return tuple(int(float(v) // 1) for v in m.groups()) if m else None
 
-    def gamemode(self) -> str:
-        m = re.search(r"data: (\d)", self.ask(f"data get entity {self.p} playerGameType"))
+    def gamemode(self, player: str | None = None) -> str:
+        m = re.search(r"data: (\d)", self.ask(f"data get entity {player or self.p} playerGameType"))
         return GAMEMODES[int(m.group(1))] if m and int(m.group(1)) < 4 else "survival"
 
     def health(self) -> float:
@@ -667,10 +668,12 @@ def full_catalog() -> dict[str, list[Entry]]:
         for mood, entries in build_arsenal().items():
             _FULL.setdefault(mood, []).extend(entries)
         from .am import build_am_scenarios
+        from .projects import build_entries as build_projects
 
         extra = build_scenarios()
-        for mood, entries in build_am_scenarios().items():
-            extra.setdefault(mood, []).extend(entries)
+        for more in (build_am_scenarios(), build_projects()):
+            for mood, entries in more.items():
+                extra.setdefault(mood, []).extend(entries)
         for mood, entries in extra.items():
             for w, b, mi, floor in entries:
                 if (power := _min_power(b)) is not None:

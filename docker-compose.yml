@@ -8,11 +8,14 @@ services:
       MEMORY: 2G
       ENABLE_RCON: "true"
       RCON_PASSWORD: ${RCON_PASSWORD:-change-me-bzz}
+      # датапак мухи: проклятия каждый тик, движение наоборот, Ад AM (своё измерение)
+      DATAPACKS: /datapacks/flybrain
       # RCON наружу не публикуем — к нему ходит только муха внутри сети compose
     ports:
       - "25565:25565"
     volumes:
       - ./mc-data:/data
+      - ./datapack:/datapacks:ro
     restart: unless-stopped
 
   flybrain:

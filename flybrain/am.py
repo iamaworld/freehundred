@@ -244,8 +244,10 @@ SAY_BY_KEY = {f"say_{i}": p for i, p in enumerate(SAY)}
 def punishments():
     """Кары за проигрыш: имена действий из commands.py."""
     from . import commands as c
+    from . import projects as pj
 
-    return [c._cage, c._pit, c._no_escape, c._time_stop, c._immortal_pain, c._transform, c._starve, c._swarm,
+    return [pj.hell_trip, pj.one_body, pj.curse("fly_reverse"), pj.curse("fly_spin"), pj.curse("fly_stare"),
+            pj.curse("fly_stormtrail"), c._cage, c._pit, c._no_escape, c._time_stop, c._immortal_pain, c._transform, c._starve, c._swarm,
             c._burn, c._banish, c._ghost, c._eternal_night, c._creepers, c._tnt_rain, c._smite, c._lightning_ring,
             c._anvils, c._meteors, c._fake_death, c._sky_prison, c._floor_is_lava, c._eyes_everywhere]
 

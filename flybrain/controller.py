@@ -126,6 +126,7 @@ class FlyController:
             self.gm.on_result = lambda p, won: self.memory.count(p, "games_won" if won else "games_lost")
         self._next_monologue = time.time() + self.rng.uniform(30, 90)
         self._guarded: dict[str, float] = {}
+        self.projects: list[list[list[str]]] = []  # долгие проекты AM: по шагу за тик
         self._last_mention = -1e9
 
     # ---------- ввод ----------
@@ -307,6 +308,8 @@ class FlyController:
                     self.senses.add(sense, hz)
         for delay, cmd in action.reverts:
             heapq.heappush(self._reverts, (now + delay, self.tick_no, cmd))
+        if action.steps:
+            self.projects.append(list(action.steps))
         if self.cfg.announce:
             self.announce(action.name, target)
 
@@ -329,6 +332,14 @@ class FlyController:
         reply = reply.strip()
         if cmd.endswith("seed") or " locate " in f" {cmd}" or cmd.startswith("random"):
             self.send(tellraw(f"вижу: {reply[:180]}", "light_purple"))
+
+    def run_projects(self):
+        """Каждый проект делает один шаг за тик — мир меняется на глазах."""
+        for proj in list(self.projects):
+            for cmd in proj.pop(0):
+                self.send(cmd)
+            if not proj:
+                self.projects.remove(proj)
 
     def run_reverts(self, now: float, force: bool = False):
         while self._reverts and (force or self._reverts[0][0] <= now):
@@ -381,6 +392,7 @@ class FlyController:
         if self.tick_no % self.cfg.poll_every_ticks == 1:
             self.poll_world()
         self.run_reverts(now)
+        self.run_projects()
         self.am_tick(now)
         if self.tick_no % self.cfg.body_every_ticks == 0:
             self.body_tick()
