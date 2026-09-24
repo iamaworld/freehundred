@@ -24,6 +24,8 @@ services:
       FLY_RCON_PORT: "25575"
       FLY_RCON_PASSWORD: ${RCON_PASSWORD:-change-me-bzz}
       FLY_LOG_PATH: /mc/logs/latest.log
+      # сила мухи: safe | chaos | am (am — почти всемогущая, как AM)
+      FLY_POWER: ${FLY_POWER:-am}
       # любые поля Config можно переопределить: FLY_ACT_GAIN, FLY_MAX_ACTIONS_PER_MIN, ...
     volumes:
       - ./data:/data          # коннектом (~135 МБ, качается при первом запуске)

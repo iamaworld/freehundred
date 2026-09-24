@@ -29,8 +29,10 @@ class Mood:
 
 
 class MoodEngine:
-    def __init__(self, reference_hz: dict[str, float], smoothing: float = 0.5, bored_below: float = 0.1):
+    def __init__(self, reference_hz: dict[str, float], smoothing: float = 0.5, bored_below: float = 0.1,
+                 gains: dict[str, float] | None = None):
         self.ref = reference_hz
+        self.gains = gains or {}  # усиление отдельных настроений (ненависть в режиме am)
         self.smoothing = smoothing  # доля старого значения в EMA
         self.bored_below = bored_below
         self.scores = {k: 0.0 for k in reference_hz}
@@ -38,7 +40,8 @@ class MoodEngine:
     def update(self, rates: dict[str, float]) -> Mood:
         a = self.smoothing
         for k, ref in self.ref.items():
-            self.scores[k] = a * self.scores[k] + (1 - a) * rates.get(k, 0.0) / ref
+            g = self.gains.get(k, 1.0)
+            self.scores[k] = a * self.scores[k] + (1 - a) * g * rates.get(k, 0.0) / ref
         name, top = max(self.scores.items(), key=lambda kv: kv[1])
         if top < self.bored_below:
             return Mood("bored", 0.0, dict(self.scores))

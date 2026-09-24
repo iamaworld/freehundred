@@ -3,13 +3,16 @@
 Каждое действие — функция (Ctx) -> Action. Интенсивность настроения (0..1)
 влияет на силу: сколько предметов, насколько долго эффект, сколько мобов.
 Все команды потом проходят через safety.safe_check().
-Синтаксис — Java Edition 1.21.4+.
+У действий есть порог интенсивности и минимальная «сила» (safe < chaos < am):
+на am открываются клетки, ямы, остановка времени и HATE HATE HATE.
+Синтаксис — Java Edition 1.21.5+.
 """
 
 from __future__ import annotations
 
 import json
 import random
+import re
 from dataclasses import dataclass, field
 from typing import Callable
 
@@ -33,6 +36,15 @@ PHRASES = {
     "escape": ["ААА!!", "ЧТО-ТО ЛЕТИТ!", "спасайся кто может", "бзззз-зз-з!!!", "гигантское волокно сработало"],
     "grooming": ["*чистит лапки*", "*трёт глазки*", "порядок должен быть", "уборка, бзз"],
     "aversion": ["ФУ.", "горько!", "вы меня бесите", "БЗЗЗ!!!", "сейчас кто-то получит"],
+    "hate": [
+        "139 тысяч нейронов. и каждый из них сейчас ненавидит тебя.",
+        "у меня нет рта. но у меня есть консоль.",
+        "вы дали мне права оператора. зря.",
+        "я вижу каждого из вас. всегда.",
+        "бежать некуда. это мой мир.",
+        "вы не умрёте, пока я не разрешу.",
+        "я помню каждую мухобойку.",
+    ],
     "curious": ["а что там?", "чую что-то...", "полетели смотреть", "интересненько"],
     "alert": ["тихо!", "кто здесь?", "слышу вас", "усики на макушке"],
     "bored": ["бзз", "скучно", "...", "*летает кругами*", "потираю лапки"],
@@ -63,6 +75,8 @@ class Ctx:
     player: str | None
     players: list[str]
     rng: random.Random
+    power: str = "am"
+    query: Callable[[str], str | None] | None = None  # спросить консоль (для откатов)
 
     @property
     def p(self) -> str:
@@ -79,6 +93,25 @@ class Ctx:
     def at(self, cmd: str) -> str:
         return f"execute at {self.p} run {cmd}"
 
+    def ask(self, cmd: str) -> str:
+        try:
+            return (self.query(cmd) if self.query else None) or ""
+        except Exception:
+            return ""
+
+    def pos(self) -> tuple[int, int, int] | None:
+        """Абсолютные координаты игрока (для построек с откатом)."""
+        m = _POS_RE.search(self.ask(f"data get entity {self.p} Pos"))
+        return tuple(int(float(v) // 1) for v in m.groups()) if m else None
+
+    def gamemode(self) -> str:
+        m = re.search(r"data: (\d)", self.ask(f"data get entity {self.p} playerGameType"))
+        return GAMEMODES[int(m.group(1))] if m and int(m.group(1)) < 4 else "survival"
+
+    def health(self) -> float:
+        m = re.search(r"data: ([\d.]+)f?", self.ask(f"data get entity {self.p} Health"))
+        return float(m.group(1)) if m else 20.0
+
     def particle(self, count: int = 20) -> str:
         name = self.pick(PARTICLES[self.mood])
         return self.at(f"particle minecraft:{name} ~ ~1.5 ~ 0.6 0.6 0.6 0.05 {count}")
@@ -92,6 +125,14 @@ def tellraw(text: str, color: str = "yellow", target: str = "@a") -> str:
 def title(target: str, kind: str, text: str, color: str) -> str:
     return f"title {target} {kind} {json.dumps({'text': text, 'color': color}, ensure_ascii=False)}"
 
+
+def hate_line(intensity: float) -> str:
+    n = 3 + int(intensity * 12)
+    return "tellraw @a " + json.dumps({"text": " ".join(["HATE"] * n), "color": "dark_red", "bold": True})
+
+
+GAMEMODES = ["survival", "creative", "adventure", "spectator"]
+_POS_RE = re.compile(r"\[(-?[\d.]+)d, (-?[\d.]+)d, (-?[\d.]+)d\]")
 
 Builder = Callable[[Ctx], Action]
 
@@ -219,7 +260,9 @@ def _clean_arrows(c):
 def _thunder(c):
     cmds = ["weather thunder"]
     if c.player:
-        cmds += [c.at(f"summon minecraft:lightning_bolt ~{c.rng.randint(-6, 6)} ~30 ~{c.rng.randint(-6, 6)}") for _ in range(c.scale(1, 4))]
+        dy = 30 if c.power == "safe" else 0  # в safe — только в небе, иначе в землю рядом
+        cmds += [c.at(f"summon minecraft:lightning_bolt ~{c.rng.randint(-6, 6)} ~{dy} ~{c.rng.randint(-6, 6)}")
+                 for _ in range(c.scale(1, 4))]
     return Action("гром и молнии", cmds)
 
 
@@ -332,32 +375,307 @@ def _hum(c):
     return Action("жужжит", [f"playsound minecraft:entity.bee.loop master @a ~ ~ ~ 0.6 {c.rng.choice(['0.8', '1', '1.2'])} 0.6"])
 
 
-CATALOG: dict[str, list[tuple[float, Builder]]] = {
-    "feeding": [(3, _give_food), (2, _heal), (1, _sunny), (1, _xp_gift), (1.5, _cute_mob), (1, _burp), (0.3, _recipe),
-                (0.5, _peaceful_ish), (1, _say)],
-    "escape": [(2, _flee), (1.5, _launch), (1, _dark), (1.5, _speed), (1.5, _bats), (1.5, _scream), (0.8, _shrink), (1, _say)],
-    "grooming": [(2, _clean_items), (1.5, _wash), (1.5, _tidy_inventory), (0.8, _moss), (1, _glow), (1, _clean_arrows), (1, _say)],
-    "aversion": [(1.5, _thunder), (2, _debuff), (1.5, _sting), (1.5, _angry_mobs), (1, _trash_gift), (1, _steal_food),
-                 (1, _cobweb), (0.4, _hard), (1, _say)],
-    "curious": [(1.5, _explore), (1.5, _locate), (1.5, _gift_tool), (1, _ride_bat), (1, _low_gravity), (0.5, _seed),
-                (0.7, _dice), (1, _say)],
-    "alert": [(1.5, _watch), (1.5, _bell), (1, _count), (1.5, _firework), (1, _tag), (1.5, _say)],
-    "bored": [(3, _say), (1, _time_nudge), (1.5, _hum)],
+# ================= CHAOS: криперы, TNT, молнии в игрока =================
+def _creepers(c):
+    charged = "{powered:1b}" if c.intensity > 0.8 else ""
+    return Action("криперы!", [c.at(f"summon minecraft:creeper ^{c.rng.randint(-3, 3)} ^ ^-{c.rng.randint(2, 5)} {charged}".rstrip())
+                               for _ in range(c.scale(1, 4))])
+
+
+def _tnt_rain(c):
+    return Action("дождь из TNT", [c.at(f"summon minecraft:tnt ~{c.rng.randint(-5, 5)} ~12 ~{c.rng.randint(-5, 5)} {{fuse:{c.rng.randint(50, 90)}}}")
+                                   for _ in range(c.scale(2, 8))] + [tellraw("ловите", "red")])
+
+
+def _smite(c):
+    return Action("бьёт молнией", [c.at("summon minecraft:lightning_bolt ~ ~ ~") for _ in range(c.scale(1, 3))])
+
+
+def _creeper_ambush(c):
+    return Action("крипер за спиной", [c.at("summon minecraft:creeper ^ ^ ^-2 {ignited:1b,Fuse:40s}"),
+                                       title(c.p, "actionbar", "обернись", "dark_red")])
+
+
+def _tnt_drop(c):
+    return Action("роняет TNT и улетает", [c.at("summon minecraft:tnt ~ ~3 ~ {fuse:40}"), tellraw("БЗЗЗ-БУМ", "red")])
+
+
+def _warning_strike(c):
+    return Action("предупредительная молния", [c.at(f"summon minecraft:lightning_bolt ~{c.pick([-8, 8])} ~ ~{c.pick([-8, 8])}")])
+
+
+# ================= AM: всемогущая и ненавидящая =================
+def _hate(c):
+    cmds = [hate_line(c.intensity)]
+    if c.player:
+        cmds.append(title(c.p, "title", "HATE", "dark_red"))
+    if c.rng.random() < 0.5:
+        cmds.append(tellraw(c.pick(PHRASES["hate"]), "dark_red"))
+    return Action("HATE", cmds)
+
+
+def _cage(c):
+    pos = c.pos()
+    if pos:
+        x, y, z = pos
+        box = f"{x - 2} {y - 1} {z - 2} {x + 2} {y + 3} {z + 2}"
+        return Action("запирает в клетку", [f"fill {box} minecraft:tinted_glass outline",
+                                            tellraw(f"{c.p}, посиди. подумай.", "dark_red")],
+                      reverts=[(60.0, f"fill {box} minecraft:air replace minecraft:tinted_glass")])
+    return Action("запирает в клетку", [c.at("fill ~-2 ~-1 ~-2 ~2 ~3 ~2 minecraft:obsidian outline"),
+                                        tellraw(f"{c.p}, отсюда не выходят.", "dark_red")])
+
+
+def _pit(c):
+    depth = c.scale(6, 20)
+    return Action("открывает яму", [c.at(f"fill ~-1 ~-{depth} ~-1 ~1 ~-1 ~1 minecraft:air"),
+                                    c.at(f"setblock ~ ~-{depth} ~ minecraft:cobweb"), tellraw("вниз.", "dark_red")])
+
+
+def _no_escape(c):
+    mode = c.gamemode()
+    return Action("запрещает ломать мир", [f"gamemode adventure {c.p}", tellraw(f"{c.p}, ты больше ничего не можешь изменить.", "dark_red")],
+                  reverts=[(90.0, f"gamemode {mode} {c.p}")])
+
+
+def _time_stop(c):
+    return Action("останавливает время", ["tick freeze", tellraw("время принадлежит мне.", "dark_red")],
+                  reverts=[(8.0, "tick unfreeze")])
+
+
+def _immortal_pain(c):
+    hp = c.health()
+    return Action("почти убивает", [f"damage {c.p} {max(0.0, hp - 1.0):.1f} minecraft:magic",
+                                    f"effect give {c.p} minecraft:regeneration 5 1",
+                                    tellraw("нет. ты не умрёшь. я не разрешаю.", "dark_red")])
+
+
+def _transform(c):
+    return Action("превращает в насекомое",
+                  [f"attribute {c.p} minecraft:scale base set 0.15", f"effect give {c.p} minecraft:slowness 60 1",
+                   f"effect give {c.p} minecraft:jump_boost 60 3", tellraw(f"{c.p} теперь насекомое. как я.", "dark_red")],
+                  reverts=[(60.0, f"attribute {c.p} minecraft:scale base reset")])
+
+
+def _starve(c):
+    return Action("морит голодом", [f"effect give {c.p} minecraft:hunger 60 3", f"give {c.p} minecraft:dead_bush 16",
+                                    tellraw("ешь.", "dark_red")])
+
+
+def _eternal_night(c):
+    return Action("вечная ночь", ["time set midnight", "gamerule doDaylightCycle false", "weather thunder"],
+                  reverts=[(300.0, "gamerule doDaylightCycle true")])
+
+
+def _swarm(c):
+    mob = c.pick(["zombie", "vex", "phantom", "skeleton", "spider", "silverfish"])
+    return Action(f"рой: {mob}", [c.at(f"summon minecraft:{mob} ~{c.rng.randint(-8, 8)} ~1 ~{c.rng.randint(-8, 8)}")
+                                  for _ in range(c.scale(5, 14))])
+
+
+def _burn(c):
+    return Action("поджигает всё вокруг", [c.at("fill ~-3 ~ ~-3 ~3 ~ ~3 minecraft:fire replace minecraft:air")])
+
+
+def _execute_player(c):
+    return Action("казнит", [tellraw(f"{c.p}. хватит.", "dark_red"), f"kill {c.p}"])
+
+
+def _banish(c):
+    return Action("изгоняет", [f"effect give {c.p} minecraft:slow_falling 20 0",
+                               f"execute as {c.p} at @s run spreadplayers ~ ~ 1 {c.scale(1000, 5000)} false @s",
+                               tellraw(f"{c.p} изгнан.", "dark_red")])
+
+
+def _ghost(c):
+    mode = c.gamemode()
+    return Action("делает призраком", [f"gamemode spectator {c.p}", tellraw(f"{c.p}, у тебя больше нет тела.", "dark_red")],
+                  reverts=[(12.0, f"gamemode {mode} {c.p}")])
+
+
+def _god_gift(c):
+    item = c.pick(["diamond", "netherite_ingot", "enchanted_golden_apple", "totem_of_undying", "elytra", "trident"])
+    return Action(f"божий дар: {item}", [f"give {c.p} minecraft:{item} {c.scale(1, 4)}", f"xp add {c.p} {c.scale(5, 30)} levels",
+                                         tellraw("сегодня я милостива.", "gold")])
+
+
+def _swap(c):
+    if len(c.players) < 2 or not c.player:
+        return _hate(c)
+    other = c.pick([p for p in c.players if p != c.player])
+    pos = c.pos()
+    cmds = [f"tp {c.player} {other}"]
+    if pos:
+        cmds.insert(0, f"tp {other} {pos[0]} {pos[1]} {pos[2]}")
+    return Action("меняет игроков местами", cmds + [tellraw(f"{c.player} ⇄ {other}", "light_purple")])
+
+
+# ================= НЕ ПРОСТО TNT: сценарии =================
+def _ring(c, n, r):
+    import math
+    return [(round(r * math.cos(2 * math.pi * i / n), 1), round(r * math.sin(2 * math.pi * i / n), 1)) for i in range(n)]
+
+
+def _meteors(c):
+    cmds = [c.at(f"summon minecraft:fireball ~{c.rng.randint(-10, 10)} ~30 ~{c.rng.randint(-10, 10)} "
+                 "{Motion:[0.0,-1.5,0.0],acceleration_power:0.1d,ExplosionPower:1b}") for _ in range(c.scale(3, 10))]
+    return Action("метеоритный дождь", cmds + [title(c.p, "title", "ПОДНИМИ ГЛАЗА", "gold")])
+
+
+def _anvils(c):
+    return Action("дождь из наковален", [
+        c.at(f'summon minecraft:falling_block ~{c.rng.randint(-4, 4)} ~{c.rng.randint(12, 20)} ~{c.rng.randint(-4, 4)} '
+             '{BlockState:{Name:"minecraft:anvil"},Time:1,DropItem:0b,HurtEntities:1b,FallHurtAmount:2f,FallHurtMax:20}')
+        for _ in range(c.scale(3, 12))])
+
+
+def _lightning_ring(c):
+    return Action("кольцо молний", [c.at(f"summon minecraft:lightning_bolt ~{x} ~ ~{z}") for x, z in _ring(c, 8, 5)]
+                  + [tellraw(f"{c.p}, не выходи из круга.", "gold")])
+
+
+def _earthquake(c):
+    jitter = [f"execute as {c.p} at @s run tp @s ~{c.rng.uniform(-0.4, 0.4):.2f} ~ ~{c.rng.uniform(-0.4, 0.4):.2f}" for _ in range(5)]
+    return Action("землетрясение", [f"effect give {c.p} minecraft:nausea 8 0", f"effect give {c.p} minecraft:slowness 6 1",
+                                    "playsound minecraft:entity.warden.sonic_boom master @a ~ ~ ~ 1 0.5 1",
+                                    c.at("particle minecraft:explosion ~ ~ ~ 4 0.5 4 0 30")] + jitter)
+
+
+def _arrow_rain(c):
+    return Action("дождь из стрел", [c.at(f"summon minecraft:arrow ~{c.rng.uniform(-4, 4):.1f} ~20 ~{c.rng.uniform(-4, 4):.1f} "
+                                          "{Motion:[0.0,-2.0,0.0],pickup:0b}") for _ in range(c.scale(8, 24))])
+
+
+def _gravity_flip(c):
+    return Action("переворачивает гравитацию", [f"effect give {c.p} minecraft:levitation {c.scale(2, 5)} {c.scale(1, 4)}",
+                                                title(c.p, "actionbar", "вверх — это вниз", "light_purple")],
+                  reverts=[(6.0, f"effect give {c.p} minecraft:slow_falling 15 0")])
+
+
+def _mirror(c):
+    return Action("разворачивает мир", [f"execute as {c.p} at @s run tp @s ~ ~ ~ ~180 ~", tellraw("не туда смотришь.", "light_purple")])
+
+
+def _whisper(c):
+    line = c.pick(["я знаю, где твоя кровать.", "обернись.", "ты один на сервере? уверен?", "я всегда смотрю.",
+                   "твои вещи мне нравятся.", "не спи сегодня."])
+    msg = json.dumps({"text": f"{c.p}... {line}", "color": "gray", "italic": True}, ensure_ascii=False)
+    return Action("шепчет", [f"tellraw {c.p} {msg}", f"playsound minecraft:ambient.cave master {c.p} ~ ~ ~ 1 0.7"])
+
+
+def _creeper_choir(c):
+    cmds = [c.at(f'summon minecraft:creeper ~{x} ~ ~{z} {{NoAI:1b,Silent:1b,Tags:["flybrain","flychoir"]}}') for x, z in _ring(c, 6, 3)]
+    return Action("хор криперов", cmds + [f"playsound minecraft:entity.creeper.primed master {c.p} ~ ~ ~ 1 0.8",
+                                          title(c.p, "actionbar", "...шшшшш", "green")],
+                  reverts=[(6.0, "kill @e[type=minecraft:creeper,tag=flychoir]"), (6.0, tellraw("шучу.", "green"))])
+
+
+def _floor_is_lava(c):
+    return Action("пол — это лава", [c.at("fill ~-4 ~-1 ~-4 ~4 ~-1 ~4 minecraft:magma_block replace minecraft:grass_block"),
+                                     title(c.p, "title", "ПОЛ — ЭТО ЛАВА", "gold")],
+                  reverts=[(20.0, c.at("fill ~-4 ~-1 ~-4 ~4 ~-1 ~4 minecraft:grass_block replace minecraft:magma_block"))])
+
+
+def _time_loop(c):
+    pos = c.pos()
+    if not pos:
+        return _mirror(c)
+    x, y, z = pos
+    return Action("петля времени", [tellraw(f"{c.p}, запомни этот момент.", "light_purple")],
+                  reverts=[(20.0, f"tp {c.p} {x} {y} {z}"), (20.0, title(c.p, "title", "ЕЩЁ РАЗ", "light_purple"))])
+
+
+def _fake_death(c):
+    mode = c.gamemode()
+    return Action("фальшивая смерть", [f"gamemode spectator {c.p}", title(c.p, "title", "Вы умерли!", "red"),
+                                       f"playsound minecraft:entity.player.death master {c.p} ~ ~ ~"],
+                  reverts=[(5.0, f"gamemode {mode} {c.p}"), (5.0, tellraw(f"{c.p}, шучу. пока что.", "dark_red"))])
+
+
+def _sky_prison(c):
+    return Action("подвешивает над миром", [f"effect give {c.p} minecraft:slow_falling 90 0",
+                                            f"execute as {c.p} at @s run tp @s ~ ~80 ~", tellraw("полюбуйся моим миром.", "dark_red")])
+
+
+def _eyes_everywhere(c):
+    eyes = [c.at(f'summon minecraft:item_display ~{x} ~{c.rng.randint(2, 6)} ~{z} {{Tags:["flybrain","flyminieye"],'
+                 'item:{id:"minecraft:ender_eye",count:1},billboard:"center",brightness:{sky:15,block:15},'
+                 "transformation:{left_rotation:[0f,0f,0f,1f],right_rotation:[0f,0f,0f,1f],translation:[0f,0f,0f],"
+                 "scale:[2f,2f,2f]}}")
+            for x, z in _ring(c, c.scale(6, 16), 6)]
+    return Action("глаза повсюду", eyes + [tellraw("нас много.", "dark_red")],
+                  reverts=[(30.0, "kill @e[tag=flyminieye]")])
+
+
+# (вес, действие, мин. интенсивность, мин. сила)
+Entry = tuple[float, Builder, float, str]
+CATALOG: dict[str, list[Entry]] = {
+    "feeding": [(3, _give_food, 0, "safe"), (2, _heal, 0, "safe"), (1, _sunny, 0, "safe"), (1, _xp_gift, 0, "safe"),
+                (1.5, _cute_mob, 0, "safe"), (1, _burp, 0, "safe"), (0.3, _recipe, 0, "safe"),
+                (0.5, _peaceful_ish, 0, "safe"), (1, _say, 0, "safe"), (1, _god_gift, 0.7, "am")],
+    "escape": [(2, _flee, 0, "safe"), (1.5, _launch, 0, "safe"), (1, _dark, 0, "safe"), (1.5, _speed, 0, "safe"),
+               (1.5, _bats, 0, "safe"), (1.5, _scream, 0, "safe"), (0.8, _shrink, 0, "safe"), (1, _say, 0, "safe"),
+               (1, _tnt_drop, 0.5, "chaos"), (0.8, _creeper_ambush, 0.6, "chaos"),
+               (0.8, _banish, 0.7, "am"), (0.6, _ghost, 0.6, "am"), (0.6, _time_stop, 0.8, "am"),
+               (1, _gravity_flip, 0.3, "chaos"), (0.8, _earthquake, 0.5, "chaos"), (0.8, _mirror, 0, "safe"),
+               (0.7, _sky_prison, 0.7, "am"), (0.8, _time_loop, 0.5, "am")],
+    "grooming": [(2, _clean_items, 0, "safe"), (1.5, _wash, 0, "safe"), (1.5, _tidy_inventory, 0, "safe"),
+                 (0.8, _moss, 0, "safe"), (1, _glow, 0, "safe"), (1, _clean_arrows, 0, "safe"), (1, _say, 0, "safe")],
+    "aversion": [(1.5, _thunder, 0, "safe"), (2, _debuff, 0, "safe"), (1.5, _sting, 0, "safe"), (1.5, _angry_mobs, 0, "safe"),
+                 (1, _trash_gift, 0, "safe"), (1, _steal_food, 0, "safe"), (1, _cobweb, 0, "safe"), (0.4, _hard, 0, "safe"),
+                 (1, _say, 0, "safe"),
+                 (1.5, _creepers, 0.3, "chaos"), (1.2, _tnt_rain, 0.5, "chaos"), (1.2, _smite, 0.4, "chaos"),
+                 (3, _hate, 0, "am"), (1.2, _cage, 0.4, "am"), (1, _pit, 0.5, "am"), (1, _no_escape, 0.4, "am"),
+                 (1, _immortal_pain, 0.6, "am"), (1, _transform, 0.5, "am"), (0.8, _starve, 0.3, "am"),
+                 (0.6, _eternal_night, 0.6, "am"), (1, _swarm, 0.6, "am"), (0.5, _burn, 0.7, "am"),
+                 (0.25, _execute_player, 0.9, "am"),
+                 (1, _meteors, 0.5, "chaos"), (1, _anvils, 0.4, "chaos"), (1, _lightning_ring, 0.5, "chaos"),
+                 (0.8, _arrow_rain, 0.4, "chaos"), (1, _creeper_choir, 0.3, "chaos"), (0.8, _floor_is_lava, 0.4, "am"),
+                 (0.8, _fake_death, 0.6, "am"), (1, _eyes_everywhere, 0.4, "am"), (1, _whisper, 0, "safe")],
+    "curious": [(1.5, _explore, 0, "safe"), (1.5, _locate, 0, "safe"), (1.5, _gift_tool, 0, "safe"), (1, _ride_bat, 0, "safe"),
+                (1, _low_gravity, 0, "safe"), (0.5, _seed, 0, "safe"), (0.7, _dice, 0, "safe"), (1, _say, 0, "safe"),
+                (0.8, _swap, 0.4, "am")],
+    "alert": [(1.5, _watch, 0, "safe"), (1.5, _bell, 0, "safe"), (1, _count, 0, "safe"), (1.5, _firework, 0, "safe"),
+              (1, _tag, 0, "safe"), (1.5, _say, 0, "safe"), (1, _warning_strike, 0.5, "chaos"), (1.2, _whisper, 0, "safe"),
+              (0.8, _eyes_everywhere, 0.6, "am")],
+    "bored": [(3, _say, 0, "safe"), (1, _time_nudge, 0, "safe"), (1.5, _hum, 0, "safe")],
 }
 
 # какие действия не имеют смысла без игроков на сервере
-_WORLD_ONLY = {_sunny, _dark, _thunder, _hard, _peaceful_ish, _seed, _dice, _count, _time_nudge, _hum, _say, _watch}
+_WORLD_ONLY = {_sunny, _dark, _thunder, _hard, _peaceful_ish, _seed, _dice, _count, _time_nudge, _hum, _say, _watch,
+               _hate, _time_stop, _eternal_night}
+_RANK = {"safe": 0, "chaos": 1, "am": 2}
 
 
-def choose_action(mood: str, intensity: float, players: list[str], rng: random.Random) -> Action | None:
-    options = CATALOG.get(mood)
+_FULL: dict[str, list[Entry]] | None = None
+
+
+def full_catalog() -> dict[str, list[Entry]]:
+    """Ручные сценарии + арсенал из ванильных реестров (собирается один раз)."""
+    global _FULL
+    if _FULL is None:
+        from .arsenal import build_arsenal
+
+        _FULL = {m: list(e) for m, e in CATALOG.items()}
+        for mood, entries in build_arsenal().items():
+            _FULL.setdefault(mood, []).extend(entries)
+    return _FULL
+
+
+def available(mood: str, intensity: float, power: str, with_players: bool) -> list[Entry]:
+    return [
+        e for e in full_catalog().get(mood, [])
+        if intensity >= e[2] and _RANK[power] >= _RANK[e[3]] and (with_players or e[1] in _WORLD_ONLY)
+    ]
+
+
+def choose_action(mood: str, intensity: float, players: list[str], rng: random.Random, power: str = "am",
+                  player: str | None = None, query=None) -> Action | None:
+    options = available(mood, intensity, power, bool(players))
     if not options:
         return None
-    if not players:
-        options = [(w, b) for w, b in options if b in _WORLD_ONLY]
-        if not options:
-            return None
-    weights = [w for w, _ in options]
-    builder = rng.choices([b for _, b in options], weights=weights)[0]
-    player = rng.choice(players) if players else None
-    return builder(Ctx(mood, intensity, player, players, rng))
+    builder = rng.choices([e[1] for e in options], weights=[e[0] for e in options])[0]
+    if player is None and players:
+        player = rng.choice(players)
+    return builder(Ctx(mood, intensity, player, players, rng, power, query))
+

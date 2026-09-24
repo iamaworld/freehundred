@@ -5,7 +5,6 @@ from __future__ import annotations
 import socket
 import struct
 import sys
-import time
 
 _LOGIN, _COMMAND, _RESPONSE = 3, 2, 0
 
@@ -74,22 +73,28 @@ class Rcon:
 
 
 class DryConsole:
-    """Ничего не отправляет — печатает команды. Для запуска без сервера."""
+    """Ничего не отправляет на сервер — печатает команды мухи, а на вопросы
+    отвечает фейковый мир (fakeworld.FakeWorld). Для запуска без сервера."""
 
-    def __init__(self, players: list[str] | None = None, out=None):
-        self.players = players or ["Steve", "Alex"]
+    QUIET = ("list", "time query", "data get", "execute at @e[tag=fly", "bossbar", "scoreboard")
+
+    def __init__(self, players: list[str] | None = None, out=None, world=None, seed=None, events: bool = True):
+        from .fakeworld import FakeWorld
+
+        self.world = world or FakeWorld(players or ["Steve", "Alex"], seed=seed, event_rate=1.0 if events else 0.0)
+        self.players = list(self.world.players)
         self.out = out or sys.stdout
         self.sent: list[str] = []
-        self._t0 = time.time()
 
     def command(self, cmd: str) -> str:
         self.sent.append(cmd)
-        if cmd == "list":
-            return f"There are {len(self.players)} of a max of 20 players online: {', '.join(self.players)}"
-        if cmd == "time query daytime":
-            return f"The time is {int((time.time() - self._t0) * 20 + 1000) % 24000}"
-        print(f"  > /{cmd}", file=self.out, flush=True)
-        return ""
+        reply = self.world.command(cmd)
+        if not cmd.startswith(self.QUIET) and " run tp @e[tag=fly" not in cmd:
+            print(f"  > /{cmd}", file=self.out, flush=True)
+        return reply
+
+    def tick(self):
+        self.world.step()
 
     def close(self):
         pass

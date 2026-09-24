@@ -32,7 +32,7 @@ def cmd_run(args):
 
     brain, ref = _brain(args)
     if args.dry_run:
-        console = DryConsole()
+        console = DryConsole(seed=args.seed)
     else:
         console = Rcon(args.rcon_host, args.rcon_port, args.rcon_password)
         while True:
@@ -43,8 +43,11 @@ def cmd_run(args):
             except Exception as e:
                 print(f"[fly] жду сервер ({e})...", flush=True)
                 time.sleep(5)
-    ctl = FlyController(brain, ref, console, log_path=args.log, config=Config.from_env(),
-                        rng=random.Random(args.seed))
+    cfg = Config.from_env()
+    if args.power:
+        cfg.power = args.power
+    ctl = FlyController(brain, ref, console, log_path=args.log, config=cfg, rng=random.Random(args.seed),
+                        memory_path=os.path.join(args.data_dir, "memory.json"))
     if args.demo_events:
         _run_with_demo_events(ctl)
     else:
@@ -63,13 +66,16 @@ def _run_with_demo_events(ctl):
         "[12:00:00 INFO]: <Steve> тупая муха, где мухобойка",
     ]
     rng = random.Random()
-    ctl.log("демо-режим: события сервера выдуманы")
-    while True:
-        t0 = time.time()
-        if rng.random() < 0.15:
-            ctl.feel_line(rng.choice(demo))
-        ctl.tick()
-        time.sleep(max(0.0, ctl.cfg.tick_s - (time.time() - t0)))
+    ctl.log(f"демо-режим: события сервера выдуманы (сила: {ctl.cfg.power})")
+    try:
+        while True:
+            t0 = time.time()
+            if rng.random() < 0.15:
+                ctl.feel_line(rng.choice(demo))
+            ctl.tick()
+            time.sleep(max(0.0, ctl.cfg.tick_s - (time.time() - t0)))
+    finally:
+        ctl.shutdown()
 
 
 def cmd_calibrate(args):
@@ -92,6 +98,25 @@ def cmd_calibrate(args):
         best = max(scores, key=scores.get)
         label = MOOD_RU[best] if scores[best] > 0.1 else MOOD_RU["bored"]
         print(f"{sense:>10} | " + " ".join(f"{scores[m]:8.2f}" for m in moods) + f" | {active:7d} | {label}", flush=True)
+
+
+def cmd_arsenal(args):
+    """Что муха умеет: все действия по настроениям и силе."""
+    from .commands import full_catalog
+    from .mood import MOOD_RU
+
+    seen = {}
+    for mood, entries in full_catalog().items():
+        for _, b, mi, power in entries:
+            if args.power and power != args.power:
+                continue
+            seen.setdefault((mood, power), set()).add(b.__name__.removeprefix("arsenal:").lstrip("_"))
+    total = len({n for names in seen.values() for n in names})
+    for (mood, power), names in sorted(seen.items()):
+        print(f"\n== {MOOD_RU.get(mood, mood)} [{power}] — {len(names)}")
+        if args.verbose:
+            print("   " + "; ".join(sorted(names)))
+    print(f"\nвсего уникальных действий: {total}")
 
 
 def cmd_download(args):
@@ -117,16 +142,22 @@ def main(argv=None):
     run.add_argument("--dry-run", action="store_true", help="не подключаться, печатать команды")
     run.add_argument("--demo-events", action="store_true", help="выдумывать события сервера")
     run.add_argument("--seed", type=int, default=None)
+    run.add_argument("--power", choices=["safe", "chaos", "am"], default=None,
+                     help="сила мухи (по умолчанию FLY_POWER или am)")
 
     cal = sub.add_parser("calibrate", help="какое настроение даёт каждое чувство")
     cal.add_argument("--hz", type=float, default=150.0)
 
     sub.add_parser("download", help="скачать коннектом (~135 МБ)")
 
+    ars = sub.add_parser("arsenal", help="список всех действий мухи")
+    ars.add_argument("--power", choices=["safe", "chaos", "am"])
+    ars.add_argument("-v", "--verbose", action="store_true")
+
     args = ap.parse_args(argv)
     if args.cmd is None:
         args = ap.parse_args([*(argv if argv is not None else sys.argv[1:]), "run"])
-    {"run": cmd_run, "calibrate": cmd_calibrate, "download": cmd_download}[args.cmd](args)
+    {"run": cmd_run, "calibrate": cmd_calibrate, "download": cmd_download, "arsenal": cmd_arsenal}[args.cmd](args)
 
 
 if __name__ == "__main__":

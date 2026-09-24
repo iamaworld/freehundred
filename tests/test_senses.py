@@ -15,7 +15,7 @@ def test_chat_vanilla_and_paper_formats():
 def test_chat_keywords():
     assert "sugar" in stim(parse_line("[12:00:01 INFO]: <Alex> держи торт"))
     rude = stim(parse_line("[12:00:01 INFO]: <Alex> тупая муха, где моя мухобойка"))
-    assert "bitter" in rude and "looming" in rude and "touch" not in rude
+    assert "bitter" in rude and "touch" not in rude
     assert "touch" in stim(parse_line("[12:00:01 INFO]: <Alex> эй муха"))
     loud = stim(parse_line("[12:00:01 INFO]: <Alex> ЭЙ ТЫ!!!"))["auditory"]
     assert loud > stim(parse_line("[12:00:01 INFO]: <Alex> эй ты"))["auditory"]

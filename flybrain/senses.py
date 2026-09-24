@@ -38,6 +38,7 @@ class Event:
     player: str
     stimuli: list[tuple[str, float]] = field(default_factory=list)
     text: str = ""
+    other: str | None = None  # убийца в сообщении о смерти
 
 
 # «[12:34:56] [Server thread/INFO]: ...» (vanilla) и «[12:34:56 INFO]: ...» (Paper)
@@ -75,7 +76,7 @@ def parse_line(line: str) -> Event | None:
             stim.append(("sugar", 120.0))
         rude = any(w in low for w in RUDE_WORDS)
         if rude:
-            stim += [("bitter", 200.0), ("looming", 40.0)]
+            stim.append(("bitter", 200.0))
         elif any(w in low for w in FLY_WORDS):
             stim.append(("touch", 60.0))  # к мухе обратились по-доброму — щекотно
         return Event("chat", m["p"], stim, text)
@@ -96,7 +97,8 @@ def parse_line(line: str) -> Event | None:
             stim.append(("heat", 120.0))
         if "drown" in low:
             stim.append(("humidity", 120.0))
-        return Event("death", m["p"], stim, msg)
+        killer = re.search(r" by (?:the )?([A-Za-z0-9_]{2,16})(?: using|$)", msg)
+        return Event("death", m["p"], stim, msg, killer.group(1) if killer else None)
     return None
 
 

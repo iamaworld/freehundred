@@ -54,3 +54,22 @@ def test_controller_blocks_forbidden_command(toy):
     assert ctl.send("stop") is None
     assert "stop" not in console.sent
     assert "ФИЛЬТР" in out.getvalue()
+
+
+def test_am_mode_chants_hate_and_remembers_offender(toy, tmp_path):
+    from flybrain.controller import Config, FlyController
+    from flybrain.rcon import DryConsole
+
+    console = DryConsole(players=["Steve"], out=io.StringIO(), events=False)
+    cfg = Config(power="am", act_base=0.0, act_gain=0.0, spontaneous_prob=0, hate_chant_gap_s=0)
+    ctl = FlyController(toy, {k: 20.0 for k in MOODS}, console, config=cfg, rng=random.Random(0),
+                        out=io.StringIO(), memory_path=tmp_path / "m.json")
+    for _ in range(4):
+        ctl.feel_line("[12:00:00 INFO]: <Steve> тупая муха, где мухобойка")
+        ctl.tick()
+    assert ctl.memory.get("Steve") < 0
+    if ctl.mood.name == "aversion":
+        assert any("HATE HATE HATE" in c for c in console.sent)
+        assert ctl.label(ctl.mood) == "НЕНАВИСТЬ"
+    ctl.shutdown()
+    assert (tmp_path / "m.json").exists()
