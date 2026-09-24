@@ -1,8 +1,10 @@
-"""Тело мухи — огромный светящийся глаз в воздухе.
+"""Тело мухи — огромный монструозный глаз в воздухе.
 
-Из чего сделан (всё ванильное, 1.21.5+):
-- ``item_display`` с оком Эндера, увеличенный в ~10 раз, ``billboard: center``
-  — глаз всегда повёрнут к тому, кто на него смотрит, и светится в темноте;
+Из чего сделан (всё ванильное, 1.21.5+), см. eye_model.py:
+- ~20 ``block_display``: склера, радужка цвета настроения, зрачок-щель,
+  сосуды, блик, веки из багровой плоти и качающиеся щупальца. Все части
+  стоят в одной точке, поэтому одна команда ``tp ... facing entity``
+  разворачивает весь глаз к игроку — он следит за тобой;
 - ``interaction`` — невидимый хитбокс вокруг глаза: запоминает, кто его
   ударил (``attack``) и кто кликнул ПКМ (``interaction``).
 
@@ -19,23 +21,26 @@ import math
 import re
 from dataclasses import dataclass, field
 
-EYE = "@e[tag=flyeye,limit=1]"
+from . import eye_model as em
+
+EYE = "@e[tag=flyeye,limit=1]"  # опорная часть (склера) — по ней проверяем, жив ли глаз
+PARTS = "@e[tag=flyeyepart]"
 HITBOX = "@e[tag=flyhitbox,limit=1]"
 
 SWEET = {"sugar", "honey_bottle", "cake", "cookie", "sweet_berries", "glow_berries", "melon_slice", "apple",
          "golden_apple", "enchanted_golden_apple", "pumpkin_pie", "honeycomb", "sugar_cane", "chorus_fruit"}
 YUCK = {"rotten_flesh", "spider_eye", "fermented_spider_eye", "poisonous_potato", "pufferfish", "suspicious_stew"}
 
-# как выглядит глаз в каждом настроении: (предмет, раскрытие по вертикали, высота над игроком, дистанция)
-LOOK = {
-    "feeding": ("ender_eye", 1.0, 5.0, 3.0),
-    "escape": ("ender_eye", 1.2, 12.0, 14.0),
-    "grooming": ("ender_eye", 0.7, 6.0, 5.0),
-    "aversion": ("spider_eye", 1.0, 4.0, 2.5),
-    "curious": ("ender_eye", 1.1, 6.0, 4.0),
-    "alert": ("ender_eye", 1.3, 7.0, 6.0),
-    "bored": ("ender_eye", 0.5, 8.0, 7.0),
-    "asleep": ("ender_eye", 0.05, 10.0, 8.0),
+# где висит глаз в каждом настроении: (высота над игроком, дистанция) — в радиусах глаза
+PLACE = {
+    "feeding": (2.2, 1.6),
+    "escape": (4.5, 5.5),
+    "grooming": (2.6, 2.2),
+    "aversion": (1.4, 1.5),
+    "curious": (2.4, 2.0),
+    "alert": (3.0, 2.6),
+    "bored": (3.2, 3.0),
+    "asleep": (4.0, 3.2),
 }
 
 _POS = re.compile(r"\[(-?[\d.E-]+)d, (-?[\d.E-]+)d, (-?[\d.E-]+)d\]")
@@ -53,9 +58,10 @@ class BodyReport:
 
 
 class FlyEye:
-    def __init__(self, send, scale: float = 10.0):
+    def __init__(self, send, radius: float = 2.5, flip: bool = False):
         self.send = send  # cmd -> ответ консоли (или None, если фильтр/ошибка)
-        self.scale = scale
+        self.R = radius
+        self.flip = flip
         self.pos: tuple[float, float, float] | None = None
         self.look = None
         self._uuid_to_player: dict[tuple, str] = {}
@@ -67,22 +73,23 @@ class FlyEye:
         self._angle = 0.0
 
     # ---------- внешний вид ----------
-    def _transformation(self, openness: float) -> str:
-        s = self.scale
-        return ("{left_rotation:[0f,0f,0f,1f],right_rotation:[0f,0f,0f,1f],translation:[0f,0f,0f],"
-                f"scale:[{s:.2f}f,{s * openness:.2f}f,{s:.2f}f]}}")
+    def _merge(self, part: em.Part, extra: str = ""):
+        self.send(f"data merge entity @e[tag=flyeye_{part.role},limit=1] "
+                  f"{{start_interpolation:0,{extra}transformation:{part.transformation(self.flip)}}}")
 
     def spawn(self, player: str):
         self.send("kill @e[tag=flybody]")
+        for i, part in enumerate(em.build(self.R)):
+            tags = '"flybrain","flybody","flyeyepart","flyeye_%s"' % part.role + (',"flyeye"' if i == 0 else "")
+            light = "brightness:{sky:15,block:15}," if part.glow else ""
+            self.send(
+                f"execute at {player} run summon minecraft:block_display ~ ~{2 * self.R:.1f} ~ "
+                f'{{Tags:[{tags}],block_state:{{Name:"minecraft:{part.block}"}},{light}view_range:4f,'
+                f"teleport_duration:15,interpolation_duration:5,transformation:{part.transformation(self.flip)}}}"
+            )
+        size = round(2 * self.R, 1)
         self.send(
-            f"execute at {player} run summon minecraft:item_display ~ ~6 ~ "
-            '{Tags:["flybrain","flybody","flyeye"],item:{id:"minecraft:ender_eye",count:1},billboard:"center",'
-            "brightness:{sky:15,block:15},view_range:8f,teleport_duration:20,interpolation_duration:6,"
-            f"transformation:{self._transformation(1.0)}}}"
-        )
-        size = round(self.scale * 0.55, 1)
-        self.send(
-            f"execute at {player} run summon minecraft:interaction ~ ~{6 - size / 2:.1f} ~ "
+            f"execute at {player} run summon minecraft:interaction ~ ~{self.R:.1f} ~ "
             f'{{Tags:["flybrain","flybody","flyhitbox"],width:{size}f,height:{size}f,response:1b}}'
         )
         self.look = None
@@ -90,26 +97,43 @@ class FlyEye:
         self._primed = False  # первый осмотр только запоминает старые таймстемпы
 
     def set_look(self, mood: str, rng):
-        item, openness, *_ = LOOK.get(mood, LOOK["bored"])
+        """Цвет радужки, ширина зрачка, веки — по настроению; моргание; качание щупалец."""
+        block, width, openness = em.MOOD_STYLE.get(mood, em.MOOD_STYLE["bored"])
         self._blink -= 1
-        if mood != "asleep" and self._blink <= 0 and rng.random() < 0.15:
-            openness, self._blink = 0.05, 3  # моргнула
-        key = (item, openness)
-        if key == self.look:
-            return
-        if self.look and self.look[0] != item:
-            self.send(f'data merge entity {EYE} {{item:{{id:"minecraft:{item}",count:1}}}}')
-        self.send(f"data merge entity {EYE} {{start_interpolation:0,transformation:{self._transformation(openness)}}}")
-        self.look = key
+        if mood != "asleep" and self._blink <= 0 and rng.random() < 0.12:
+            openness, self._blink = 0.0, 3  # моргнула
+        R = self.R
+        prev = self.look or (None, None, None)
+        if prev[0] != block:
+            for part in em.iris(R, block):
+                self.send(f'data merge entity @e[tag=flyeye_{part.role},limit=1] {{block_state:{{Name:"minecraft:{block}"}}}}')
+        if prev[1] != width:
+            self._merge(em.pupil(R, width))
+        if prev[2] != openness:
+            for part in em.lids(R, openness):
+                self._merge(part)
+        self.look = (block, width, openness)
+        # щупальца всё время шевелятся; в злости/панике — сильнее
+        amp = 25 if mood in ("aversion", "escape") else 5 if mood == "asleep" else 12
+        sway = [(rng.uniform(-amp, amp), rng.uniform(-amp, amp)) for _ in em.TENTACLES]
+        for part in em.tentacles(R, sway):
+            self._merge(part, "interpolation_duration:30,")
+
+    def pulse(self):
+        """Глаз на миг распахивается — видно, что муха что-то сделала."""
+        for part in em.lids(self.R, 1.45):
+            self._merge(part)
+        self._merge(em.pupil(self.R, 0.8))
+        self.look = None  # на следующем тике set_look вернёт обычный вид
 
     def move(self, player: str, mood: str, rng):
-        """Глаз висит над выбранным игроком; в панике отлетает, в злости — в лицо."""
-        _, _, height, dist = LOOK.get(mood, LOOK["bored"])
-        self._angle += rng.uniform(0.1, 0.6) * (3 if mood == "escape" else 1)  # плавно кружит
+        """Глаз висит у выбранного игрока и смотрит на него; в панике отлетает, в злости — в лицо."""
+        height, dist = PLACE.get(mood, PLACE["bored"])
+        height, dist = height * self.R, dist * self.R
+        self._angle += rng.uniform(0.1, 0.5) * (3 if mood == "escape" else 1)  # плавно кружит
         dx, dz = dist * math.cos(self._angle), dist * math.sin(self._angle)
-        size = self.scale * 0.55
-        self.send(f"execute at {player} run tp {EYE} ~{dx:.1f} ~{height:.1f} ~{dz:.1f}")
-        self.send(f"execute at {player} run tp {HITBOX} ~{dx:.1f} ~{height - size / 2:.1f} ~{dz:.1f}")
+        self.send(f"execute at {player} run tp {PARTS} ~{dx:.1f} ~{height:.1f} ~{dz:.1f} facing entity {player} eyes")
+        self.send(f"execute at {player} run tp {HITBOX} ~{dx:.1f} ~{height - self.R:.1f} ~{dz:.1f}")
         pp = self._player_pos.get(player)
         if pp:
             self.pos = (pp[0] + dx, pp[1] + height, pp[2] + dz)

@@ -29,26 +29,57 @@ class Mood:
 
 
 class MoodEngine:
+    """Частоты групп DN -> настроение.
+
+    Привыкание: пока одна эмоция держится, она устаёт (как адаптация
+    нейронов) и уступает место другим — муха не залипает в одном состоянии.
+    """
+
     def __init__(self, reference_hz: dict[str, float], smoothing: float = 0.5, bored_below: float = 0.1,
-                 gains: dict[str, float] | None = None):
+                 gains: dict[str, float] | None = None, habituation: float = 0.0, recovery: float = 0.9,
+                 stickiness: float = 0.15, min_hold: int = 4, override: float = 1.5):
         self.ref = reference_hz
         self.gains = gains or {}  # усиление отдельных настроений (ненависть в режиме am)
         self.smoothing = smoothing  # доля старого значения в EMA
         self.bored_below = bored_below
+        self.habituation = habituation
+        self.recovery = recovery  # во сколько раз спадает усталость неактивных эмоций за тик
+        self.stickiness = stickiness  # бонус текущей эмоции, чтобы не дёргалась каждый тик
+        self.current: str | None = None
+        self.min_hold = min_hold  # минимум тиков в одной эмоции...
+        self.override = override  # ...если новая не сильнее в столько раз (резкий испуг пробьётся)
+        self._held = 0
         self.scores = {k: 0.0 for k in reference_hz}
+        self.fatigue = {k: 0.0 for k in reference_hz}
 
     def update(self, rates: dict[str, float]) -> Mood:
         a = self.smoothing
         for k, ref in self.ref.items():
             g = self.gains.get(k, 1.0)
             self.scores[k] = a * self.scores[k] + (1 - a) * g * rates.get(k, 0.0) / ref
-        name, top = max(self.scores.items(), key=lambda kv: kv[1])
+        felt = {k: v * (1.0 - self.fatigue[k]) * (1.0 + self.stickiness * (k == self.current))
+                for k, v in self.scores.items()}
+        name, top = max(felt.items(), key=lambda kv: kv[1])
+        cur = self.current
+        if (cur and name != cur and self._held < self.min_hold and felt[cur] >= self.bored_below
+                and top < felt[cur] * self.override):
+            name, top = cur, felt[cur]
+        self._held = self._held + 1 if name == cur else 0
+        self.current = name if top >= self.bored_below else None
+        for k in self.fatigue:
+            if k == name and top >= self.bored_below:
+                self.fatigue[k] = min(0.85, self.fatigue[k] + self.habituation)
+            else:
+                self.fatigue[k] *= self.recovery
         if top < self.bored_below:
-            return Mood("bored", 0.0, dict(self.scores))
-        return Mood(name, 1.0 - math.exp(-1.5 * top), dict(self.scores))
+            return Mood("bored", 0.0, felt)
+        return Mood(name, 1.0 - math.exp(-1.5 * top), felt)
 
     def reset(self):
         self.scores = {k: 0.0 for k in self.ref}
+        self.fatigue = {k: 0.0 for k in self.ref}
+        self.current = None
+        self._held = 0
 
 
 class SleepCycle:

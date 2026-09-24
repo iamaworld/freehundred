@@ -13,8 +13,8 @@ import time
 
 from .body import uuid_ints
 
-_TP = re.compile(r"^execute at (\w+) run tp @e\[tag=(flyeye|flyhitbox),limit=1\] ~(-?[\d.]+) ~(-?[\d.]+) ~(-?[\d.]+)$")
-_SUMMON = re.compile(r"^execute at (\w+) run summon minecraft:(item_display|interaction) ")
+_TP = re.compile(r"^execute at (\w+) run tp @e\[tag=(flyeyepart|flyhitbox)(?:,limit=1)?\] ~(-?[\d.]+) ~(-?[\d.]+) ~(-?[\d.]+)")
+_SUMMON = re.compile(r"^execute at (\w+) run summon minecraft:(block_display|interaction) ")
 _GET = re.compile(r"^data get entity (\S+) (\S+)$")
 
 
@@ -63,8 +63,9 @@ class FakeWorld:
         if m := _SUMMON.match(cmd):
             p = self.players.get(m.group(1))
             if p:
-                if m.group(2) == "item_display":
-                    self.eye = [p[0], p[1] + 6, p[2]]
+                if m.group(2) == "block_display":
+                    if '"flyeye"' in cmd:  # опорная часть глаза
+                        self.eye = [p[0], p[1] + 6, p[2]]
                 else:
                     self.hitbox = [p[0], p[1] + 3, p[2]]
             return "Summoned new entity"
@@ -72,7 +73,7 @@ class FakeWorld:
             p = self.players.get(m.group(1))
             if p:
                 new = [p[0] + float(m.group(3)), p[1] + float(m.group(4)), p[2] + float(m.group(5))]
-                if m.group(2) == "flyeye" and self.eye:
+                if m.group(2) == "flyeyepart" and self.eye:
                     self.eye = new
                 elif m.group(2) == "flyhitbox" and self.hitbox:
                     self.hitbox = new

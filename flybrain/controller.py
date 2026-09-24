@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import heapq
+import json
 import os
 import random
 import re
@@ -23,22 +24,25 @@ class Config:
     power: str = "am"  # safe | chaos | am — см. safety.py
     sim_ms: float = 100.0  # сколько мушиного времени считать за тик
     tick_s: float = 1.0  # минимальная длина тика в реальном времени
-    act_base: float = 0.05  # шанс действия за тик при нулевой интенсивности
-    act_gain: float = 0.5  # + интенсивность * act_gain
-    min_action_gap_s: float = 4.0
-    max_actions_per_min: int = 8
-    bored_act_prob: float = 0.03
-    spontaneous_prob: float = 0.08  # шанс «случайной мысли» за тик
+    act_base: float = 0.2  # шанс действия за тик при нулевой интенсивности
+    act_gain: float = 0.8  # + интенсивность * act_gain
+    min_action_gap_s: float = 2.0
+    max_actions_per_min: int = 20
+    bored_act_prob: float = 0.1
+    spontaneous_prob: float = 0.2  # шанс «случайной мысли» за тик
+    mood_smoothing: float = 0.25  # доля старого настроения (меньше — быстрее меняется)
+    habituation: float = 0.1  # привыкание к текущей эмоции за тик
+    announce: bool = True  # подписывать каждое действие над хотбаром + вспышка
     poll_every_ticks: int = 10  # как часто спрашивать list / time
-    stim_half_life_s: float = 3.0
+    stim_half_life_s: float = 1.5
     bossbar: bool = True
     sidebar: bool = True  # табло «Мозг мухи» справа
     body: bool = True  # огромный глаз в небе
     body_every_ticks: int = 2
-    eye_scale: float = 10.0
-    hunger_period_s: float = 900.0  # за сколько муха проголодается с нуля
+    eye_radius: float = 2.5  # радиус глаза в блоках
+    eye_flip: bool = False  # если в игре глаз смотрит затылком — поставь true
     hate_chant_gap_s: float = 6.0  # HATE HATE HATE не чаще раза в N секунд (am)
-    hate_gain: float = 1.8  # в режиме am горький путь -> ненависть усилен
+    hate_gain: float = 1.4  # в режиме am горький путь -> ненависть усилен
 
     @classmethod
     def from_env(cls, prefix: str = "FLY_") -> "Config":
@@ -61,6 +65,16 @@ FEEDBACK = [
     (re.compile(r"give .*minecraft:(cake|honey|cookie|sugar|sweet)"), "sugar", 40.0),
     (re.compile(r"minecraft:fire|lightning_bolt"), "heat", 60.0),
 ]
+# «подпись» каждого действия: частицы у цели + звук (чтобы было видно, что это муха)
+FLOURISH = {
+    "feeding": ("heart", "entity.player.levelup"),
+    "escape": ("poof", "entity.phantom.swoop"),
+    "grooming": ("splash", "entity.generic.splash"),
+    "aversion": ("angry_villager", "entity.ravager.roar"),
+    "curious": ("end_rod", "block.amethyst_block.chime"),
+    "alert": ("electric_spark", "block.bell.use"),
+    "bored": ("note", "block.note_block.bass"),
+}
 # кого выбирать целью в каком настроении
 TARGET_PREFERENCE = {"feeding": "friend", "grooming": "friend", "aversion": "enemy", "escape": "enemy"}
 _PLAYERS_RE = re.compile(r"online:\s*(.*)$")
@@ -77,15 +91,15 @@ class FlyController:
         self.rng = rng or random.Random()
         self.out = out or sys.stdout
         gains = {"aversion": self.cfg.hate_gain} if self.cfg.power == "am" else None
-        self.moods = MoodEngine(reference_hz, gains=gains)
+        self.moods = MoodEngine(reference_hz, smoothing=self.cfg.mood_smoothing, gains=gains,
+                                habituation=self.cfg.habituation)
         self.sleep = SleepCycle()
         self.senses = Senses(self.cfg.stim_half_life_s)
         self.memory = PlayerMemory(memory_path)
         self.tailer = LogTailer(log_path) if log_path else None
-        self.eye = FlyEye(self.send, self.cfg.eye_scale) if self.cfg.body else None
+        self.eye = FlyEye(self.send, self.cfg.eye_radius, self.cfg.eye_flip) if self.cfg.body else None
         self.players: list[str] = []
         self.focus: str | None = None
-        self.hunger = 0.3
         self.night = False
         self.mood = None
         self.tick_no = 0
@@ -168,22 +182,6 @@ class FlyController:
             self.eye.move(self.focus, mood, self.rng)
         self.eye.set_look(mood, self.rng)
 
-    def update_hunger(self, dt: float):
-        """Голод растёт со временем, сахар его гасит. Голодная муха сильнее
-        чувствует сладкое и слабее — горькое (так и у настоящих дрозофил)."""
-        sugar = self.senses.level.get("sugar", 0.0)
-        self.hunger = min(1.0, max(0.0, self.hunger + dt / self.cfg.hunger_period_s - sugar * dt / 4000.0))
-        if self.hunger > 0.8 and self.rng.random() < 0.01:
-            self.send(tellraw("ГОЛОДНО. покормите глаз сахаром (ПКМ с сахаром в руке)", "gold"))
-
-    def brain_input(self) -> dict[str, float]:
-        rates = self.senses.rates()
-        if "sugar" in rates:
-            rates["sugar"] *= 1.0 + self.hunger
-        if "bitter" in rates:
-            rates["bitter"] *= 1.0 - 0.5 * self.hunger
-        return rates
-
     # ---------- вывод ----------
     def send(self, cmd: str) -> str | None:
         why = safe_check(cmd, self.cfg.power)
@@ -231,6 +229,22 @@ class FlyController:
                     self.senses.add(sense, hz)
         for delay, cmd in action.reverts:
             heapq.heappush(self._reverts, (now + delay, self.tick_no, cmd))
+        if self.cfg.announce:
+            self.announce(action.name, target)
+
+    def announce(self, what: str, target: str | None):
+        """Чтобы было видно, что это сделала муха: подпись над хотбаром у всех,
+        вспышка частиц у цели, звук и «пульс» глаза."""
+        m = self.mood
+        particle, sound = FLOURISH.get(m.name, FLOURISH["bored"])
+        text = f"Муха · {self.label(m)} → {what}" + (f" · {target}" if target else "")
+        self.send("title @a actionbar " + json.dumps({"text": text, "color": MOOD_COLOR.get(m.name, "white")},
+                                                       ensure_ascii=False))
+        if target:
+            self.send(f"execute at {target} run particle minecraft:{particle} ~ ~1.2 ~ 1.2 1.2 1.2 0.1 60")
+            self.send(f"playsound minecraft:{sound} master @a ~ ~ ~ 0.8 1 0.8")
+        if self.eye:
+            self.eye.pulse()
 
     def react_to_reply(self, cmd: str, reply: str):
         """Муха комментирует ответы консоли (locate, seed, random...)."""
@@ -261,7 +275,7 @@ class FlyController:
         self._shown_mood = (name, value)
 
     def show_sidebar(self):
-        """Табло справа: сила каждого настроения и голод, 0..100."""
+        """Табло справа: сила каждого настроения, 0..100."""
         if not self.cfg.sidebar or not self.mood or self.tick_no % 3:
             return
         if not self._shown_sidebar:
@@ -270,7 +284,6 @@ class FlyController:
         rows = {MOOD_RU[k].capitalize(): int(min(1.0, v) * 100) for k, v in self.moods.scores.items()}
         if self.cfg.power == "am":
             rows["Ненависть"] = rows.pop(MOOD_RU["aversion"].capitalize())
-        rows["Голод"] = int(self.hunger * 100)
         for name, val in rows.items():
             if self._shown_sidebar.get(name) != val:
                 self.send(f"scoreboard players set {name} flybrain {val}")
@@ -292,7 +305,6 @@ class FlyController:
         self.run_reverts(now)
         if self.tick_no % self.cfg.body_every_ticks == 0:
             self.body_tick()
-        self.update_hunger(dt)
         self.memory.forget(dt)
         if self.tick_no % 30 == 0:
             self.memory.save()
@@ -309,10 +321,10 @@ class FlyController:
                 return
 
         self.spontaneous()
-        state = self.brain.step(self.brain_input(), self.cfg.sim_ms)
+        state = self.brain.step(self.senses.rates(), self.cfg.sim_ms)
         self.mood = self.moods.update(state.rates)
         scores = " ".join(f"{k[:4]}={v:.2f}" for k, v in self.mood.scores.items())
-        self.log(f"вход={state.drive:.0f}Гц активно={state.active} голод={self.hunger:.2f} | "
+        self.log(f"вход={state.drive:.0f}Гц активно={state.active} | "
                  f"{self.label(self.mood)} {self.mood.intensity:.2f} | {scores}")
         self.show_mood()
         self.show_sidebar()

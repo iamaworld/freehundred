@@ -675,12 +675,16 @@ def _source(builder) -> str:
 
 
 def _balance(entries: list[Entry]) -> list[Entry]:
-    """Ручные сценарии, шаблоны и арсенал делят шансы поровну — чтобы характер
-    мухи не утонул в тысяче мелких действий."""
+    """Ручные сценарии, шаблоны и арсенал делят шансы в пропорции SOURCE_SHARE —
+    чтобы характер мухи не утонул в тысяче мелких действий."""
     totals: dict[str, float] = {}
     for w, b, *_ in entries:
         totals[_source(b)] = totals.get(_source(b), 0.0) + w
-    return [(w / totals[_source(b)], b, mi, p) for w, b, mi, p in entries]
+    return [(SOURCE_SHARE.get(_source(b), 0.2) * w / totals[_source(b)], b, mi, p) for w, b, mi, p in entries]
+
+
+# доля шансов: крупные сценарии чаще, мелочи арсенала реже
+SOURCE_SHARE = {"hand": 0.4, "scenario": 0.4, "arsenal": 0.2}
 
 
 def available(mood: str, intensity: float, power: str, with_players: bool) -> list[Entry]:

@@ -224,10 +224,10 @@ def build_arsenal() -> dict[str, list[Entry]]:
     # частицы и звуки
     for mood, parts in PARTICLES.items():
         _category(A, "частицы", mood, parts,
-                  lambda p: (f"частицы {p}", lambda c: [near(c, f"particle minecraft:{p} ~ ~1.5 ~ 1 1 1 0.05 {c.scale(20, 200)}")]), 0, 1.5)
+                  lambda p: (f"частицы {p}", lambda c: [near(c, f"particle minecraft:{p} ~ ~1.5 ~ 1 1 1 0.05 {c.scale(20, 200)}")]), 0, 0.2)
     for mood, sounds in SOUNDS.items():
         _category(A, "звуки", mood, sounds,
-                  lambda s: (f"звук {s}", lambda c: [f"playsound minecraft:{s} master @a ~ ~ ~ 1 {c.rng.choice(['0.5', '1', '1.5'])} 1"]), 0, 1.5)
+                  lambda s: (f"звук {s}", lambda c: [f"playsound minecraft:{s} master @a ~ ~ ~ 1 {c.rng.choice(['0.5', '1', '1.5'])} 1"]), 0, 0.2)
 
     # чары
     _category(A, "чары", "feeding", ENCHANTS,

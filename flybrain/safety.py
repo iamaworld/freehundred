@@ -44,7 +44,7 @@ FORBIDDEN_ENTITIES = {
     "safe": {
         "wither", "ender_dragon", "tnt", "tnt_minecart", "end_crystal", "creeper", "ghast", "fireball",
         "small_fireball", "dragon_fireball", "wither_skull", "warden", "ravager", "command_block_minecart",
-        "falling_block", "block_display",
+        "falling_block",
     },
     "chaos": {"wither", "ender_dragon", "warden", "command_block_minecart", "end_crystal"},
 }
@@ -78,7 +78,7 @@ LIMITS = {
     "safe": (125, 6.0, 64, 200, 30, 60),
     "chaos": (1000, 12.0, 64, 500, 30, 100),
 }
-_BODY_TAG = re.compile(r"tag=fly(body|eye|hitbox)\b")
+_BODY_TAG = re.compile(r"tag=fly[a-z0-9_]*")
 
 
 class Rejected(ValueError):

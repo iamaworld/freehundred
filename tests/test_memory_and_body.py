@@ -53,9 +53,24 @@ def test_eye_look_changes_with_mood():
     world = FakeWorld(["Steve"], seed=1, event_rate=0.0)
     eye = FlyEye(world.command)
     eye.spawn("Steve")
+    summons = [c for c in world.log if "summon minecraft:block_display" in c]
+    assert len(summons) >= 20 and world.eye  # монстр из ~20 частей
     rng = random.Random(0)
     eye.set_look("bored", rng)
     eye.set_look("aversion", rng)
-    assert any("spider_eye" in c for c in world.log)
+    assert any("flyeye_iris0" in c and "red_concrete" in c for c in world.log)  # радужка краснеет
     eye.set_look("asleep", rng)
-    assert "0.50f" in world.log[-1] or "scale:[10.00f,0.50f" in world.log[-1]
+    assert any("flyeye_lidu" in c for c in world.log[-12:])  # веки закрываются
+    eye.move("Steve", "curious", rng)
+    assert any("tp @e[tag=flyeyepart]" in c and "facing entity Steve eyes" in c for c in world.log)
+
+
+def test_eye_model_geometry():
+    from flybrain import eye_model as em
+
+    parts = em.build(2.5, "aversion")
+    roles = [p.role for p in parts]
+    assert len(roles) == len(set(roles)) >= 20
+    assert "red_concrete" in {p.block for p in parts}
+    closed = em.lids(2.5, 0.0)
+    assert closed[0].translation[1] <= 0.01 and closed[1].translation[1] + closed[1].scale[1] >= -0.01  # щель закрыта
