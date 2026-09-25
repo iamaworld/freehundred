@@ -110,7 +110,7 @@ def cmd_arsenal(args):
         for _, b, mi, power in entries:
             if args.power and power != args.power:
                 continue
-            seen.setdefault((mood, power), set()).add(b.__name__.removeprefix("arsenal:").lstrip("_"))
+            seen.setdefault((mood, power), set()).add(b.__name__.split(":",1)[-1].lstrip("_"))
     total = len({n for names in seen.values() for n in names})
     for (mood, power), names in sorted(seen.items()):
         print(f"\n== {MOOD_RU.get(mood, mood)} [{power}] — {len(names)}")

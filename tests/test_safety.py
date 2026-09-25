@@ -119,9 +119,9 @@ def test_power_gates_actions():
     assert len(am) > len(names("chaos")) > len(safe)
 
 
-def test_arsenal_is_huge():
-    from flybrain.arsenal import build_arsenal, stats
+def test_no_plain_arsenal_left():
+    from flybrain.commands import full_catalog
 
-    st = stats(build_arsenal())
-    assert st["total"] >= 500
-    assert st["by_power"]["safe"] > 0 and st["by_power"]["chaos"] > 0 and st["by_power"]["am"] > 0
+    names = {e[1].__name__ for es in full_catalog().values() for e in es}
+    assert not any(n.startswith("arsenal:") for n in names)
+    assert len(names) > 300  # ручные сценарии, шаблоны, игры AM, ужас, проекты

@@ -16,6 +16,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Callable
 
+from .safety import safe_check
+
 FOODS = ["cake", "honey_bottle", "cookie", "sweet_berries", "melon_slice", "bread", "pumpkin_pie", "apple", "sugar"]
 RARE_FOODS = ["golden_apple", "golden_carrot", "enchanted_golden_apple"]
 GIFTS = ["compass", "spyglass", "map", "firework_rocket", "flower_pot", "honeycomb", "glow_berries", "bell"]
@@ -656,31 +658,40 @@ _FULL: dict[str, list[Entry]] | None = None
 
 
 def full_catalog() -> dict[str, list[Entry]]:
-    """Ручные сценарии + сценарии-шаблоны + арсенал из реестров (собирается один раз)."""
+    """Придуманные вручную события: сценарии, шаблоны, игры AM, проекты, ужас.
+    Простой арсенал из ванильных реестров сюда больше не входит."""
     global _FULL
     if _FULL is None:
-        from .arsenal import build_arsenal
-
-        from .arsenal import _ORDER, _min_power
-        from .scenarios import build_scenarios
-
-        _FULL = {m: list(e) for m, e in CATALOG.items()}
-        for mood, entries in build_arsenal().items():
-            _FULL.setdefault(mood, []).extend(entries)
         from .am import build_am_scenarios
         from .dread import build_dread
         from .projects import build_entries as build_projects
+        from .scenarios import build_scenarios
 
+        _FULL = {m: list(e) for m, e in CATALOG.items()}
         extra = build_scenarios()
         for more in (build_am_scenarios(), build_projects(), build_dread()):
             for mood, entries in more.items():
                 extra.setdefault(mood, []).extend(entries)
         for mood, entries in extra.items():
             for w, b, mi, floor in entries:
-                if (power := _min_power(b)) is not None:
-                    _FULL.setdefault(mood, []).append((w, b, mi, max(power, floor, key=_ORDER.index)))
+                if (power := min_power(b)) is not None:
+                    _FULL.setdefault(mood, []).append((w, b, mi, max(power, floor, key=POWER_ORDER.index)))
         _FULL = {m: _balance(es) for m, es in _FULL.items()}
     return _FULL
+
+
+POWER_ORDER = ["safe", "chaos", "am"]
+
+
+def min_power(builder) -> str | None:
+    """Наименьшая сила, при которой все команды действия проходят фильтр (иначе None)."""
+    rng = random.Random(0)
+    for power in POWER_ORDER:
+        a = builder(Ctx("aversion", 1.0, "Steve", ["Steve", "Alex"], rng, power))
+        cmds = a.commands + [c for _, c in a.reverts] + [c for step in a.steps for c in step]
+        if all(safe_check(c, power) is None for c in cmds):
+            return power
+    return None
 
 
 def _source(builder) -> str:
@@ -688,16 +699,14 @@ def _source(builder) -> str:
 
 
 def _balance(entries: list[Entry]) -> list[Entry]:
-    """Ручные сценарии, шаблоны и арсенал делят шансы в пропорции SOURCE_SHARE —
-    чтобы характер мухи не утонул в тысяче мелких действий."""
+    """Ручные сценарии, шаблоны и остальные источники делят шансы в пропорции SOURCE_SHARE."""
     totals: dict[str, float] = {}
     for w, b, *_ in entries:
         totals[_source(b)] = totals.get(_source(b), 0.0) + w
-    return [(SOURCE_SHARE.get(_source(b), 0.2) * w / totals[_source(b)], b, mi, p) for w, b, mi, p in entries]
+    return [(SOURCE_SHARE.get(_source(b), 0.5) * w / totals[_source(b)], b, mi, p) for w, b, mi, p in entries]
 
 
-# доля шансов: крупные сценарии чаще, мелочи арсенала реже
-SOURCE_SHARE = {"hand": 0.4, "scenario": 0.4, "arsenal": 0.2}
+SOURCE_SHARE = {"hand": 0.5, "scenario": 0.5}
 
 
 def available(mood: str, intensity: float, power: str, with_players: bool) -> list[Entry]:
