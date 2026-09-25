@@ -125,6 +125,9 @@ def cmd_arsenal(args):
     from .dread import count as dread_count
 
     print(f"    из них {dread_count()} — абстрактный психологический ужас (dread.py)")
+    from .spectacle import count as spec_count
+
+    print(f"    и {spec_count()} — многошаговые сцены-спектакли (spectacle.py)")
     print(f"итого уникальных событий: {total + st['games']}")
 
 

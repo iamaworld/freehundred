@@ -666,10 +666,11 @@ def full_catalog() -> dict[str, list[Entry]]:
         from .dread import build_dread
         from .projects import build_entries as build_projects
         from .scenarios import build_scenarios
+        from .spectacle import build_spectacle
 
         _FULL = {m: list(e) for m, e in CATALOG.items()}
         extra = build_scenarios()
-        for more in (build_am_scenarios(), build_projects(), build_dread()):
+        for more in (build_am_scenarios(), build_projects(), build_dread(), build_spectacle()):
             for mood, entries in more.items():
                 extra.setdefault(mood, []).extend(entries)
         for mood, entries in extra.items():
